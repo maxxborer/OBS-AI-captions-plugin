@@ -64,7 +64,7 @@ int main(int argc, char **argv) {
     require(html.contains("Geologica") && html.contains("/assets/geologica.ttf"),
             "Overlay must use the bundled Geologica font by default");
     require(html.contains("#8b5cf6"), "Overlay must use the purple active-word preset by default");
-    require(html.contains("parameters.get('activeBg')") && html.contains("parameters.get('font')"),
+    require(html.contains("colorParameter('activeBg'") && html.contains("parameters.get('font')"),
             "Overlay style must be configurable through the generated Browser Source URL");
     require(!html.contains("15vh"), "Overlay must not force a position inside the vertical canvas");
 
