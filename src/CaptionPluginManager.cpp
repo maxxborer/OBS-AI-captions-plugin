@@ -8,6 +8,16 @@
 CaptionPluginManager::CaptionPluginManager(const CaptionPluginSettings &initial_settings) :
         plugin_settings(initial_settings),
         source_captioner(initial_settings.enabled, initial_settings.source_cap_settings, current_scene_collection_name(), false) {
+    QObject::connect(
+            &source_captioner,
+            &SourceCaptioner::caption_result_received,
+            &tiktok_caption_server,
+            &TikTokCaptionServer::update_caption);
+
+    if (tiktok_caption_server.is_listening())
+        info_log("TikTok caption overlay ready at %s", tiktok_caption_server.overlay_url().toUtf8().constData());
+    else
+        warn_log("TikTok caption overlay could not listen on 127.0.0.1:%u", TikTokCaptionServer::port);
 }
 
 void CaptionPluginManager::external_state_changed(
@@ -66,10 +76,12 @@ void CaptionPluginManager::update_settings(const CaptionPluginSettings &new_sett
         is_file_output_relevant = true;
     }
 
+    const bool is_tiktok_overlay_relevant = state.external_is_streaming && tiktok_caption_server.is_listening();
+
     const bool equal_settings = new_settings == plugin_settings;
     const bool do_captioning = (
             new_settings.enabled &&
-            (is_streaming_relevant || is_recording_relevant || is_preview_relevant || is_text_output_relevant || is_file_output_relevant || is_virtualcam_relevant));
+            (is_streaming_relevant || is_recording_relevant || is_preview_relevant || is_text_output_relevant || is_file_output_relevant || is_virtualcam_relevant || is_tiktok_overlay_relevant));
 
     info_log("enabled: %d, "
 
@@ -90,6 +102,7 @@ void CaptionPluginManager::update_settings(const CaptionPluginSettings &new_sett
              "is_preview_open %d, "
              "is_text_output_relevant %d, "
              "is_file_output_relevant %d, "
+             "is_tiktok_overlay_relevant %d, "
 
              "scene_collection_name: %s, "
              "source:  '%s', "
@@ -116,6 +129,7 @@ void CaptionPluginManager::update_settings(const CaptionPluginSettings &new_sett
              state.external_is_preview_open,
              is_text_output_relevant,
              is_file_output_relevant,
+             is_tiktok_overlay_relevant,
 
              scene_collection_name_relevant.c_str(),
              scene_col_settings.caption_source_settings.caption_source_name.c_str(),
@@ -134,6 +148,7 @@ void CaptionPluginManager::update_settings(const CaptionPluginSettings &new_sett
         && is_preview_relevant == state.is_captioning_preview
         && is_text_output_relevant == state.is_captioning_text_output
         && is_file_output_relevant == state.is_captioning_file_output
+        && is_tiktok_overlay_relevant == state.is_captioning_tiktok_overlay
         && scene_collection_name_relevant == state.captioning_scene_collection_name
             ) {
         info_log("settings unchanged, ignoring");
@@ -149,6 +164,7 @@ void CaptionPluginManager::update_settings(const CaptionPluginSettings &new_sett
     state.is_captioning_preview = is_preview_relevant;
     state.is_captioning_text_output = is_text_output_relevant;
     state.is_captioning_file_output = is_file_output_relevant;
+    state.is_captioning_tiktok_overlay = is_tiktok_overlay_relevant;
     state.captioning_scene_collection_name = scene_collection_name_relevant;
 
     source_captioner.set_enabled(new_settings.enabled);

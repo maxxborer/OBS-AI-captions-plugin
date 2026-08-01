@@ -5,10 +5,16 @@ This local branch modernizes the original Closed Captioning OBS Plugin for OBS 3
 ## Local Windows installation (v0.35.0)
 
 1. Close OBS completely.
-2. Extract `AI-Caption-Plugin-0.35.0-windows-x64.zip`.
+2. Extract `AI-Caption-Plugin-0.37.0-windows-x64.zip`.
 3. Run `ai-caption-plugin\Install-AICaptionPlugin.ps1` from the extracted folder.
 
 The installer requests permission only to update this plugin under `%ProgramData%\obs-studio\plugins\`, downloads the Russian model on first install (about 128 MB), validates its SHA-256, and retains the verified model when the plugin is updated. The model runs with one CPU inference thread at below-normal Windows thread priority; it does not consume GPU or VRAM.
+
+## TikTok-style captions for a vertical scene
+
+The plugin serves a private overlay on `http://127.0.0.1:37545/` while OBS is open. It never leaves the computer. Add a **Browser Source** to the Aitum Vertical scene, use that URL, and set the source size to **1080 × 1920**. Place it near the bottom of the canvas. The overlay shows up to eight recent words, highlights the newest partial word in yellow, and hides stale text automatically.
+
+Keep the plugin enabled and select the microphone as the caption audio source. Captioning starts automatically when streaming, even if native Twitch captions are disabled.
 
 The legacy Google backend remains in the source tree for compatibility work, but the packaged build defaults to local recognition and does not display a Google API-key field.
 

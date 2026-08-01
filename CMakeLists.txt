@@ -24,7 +24,7 @@ include(FindSherpaOnnx)
 
 find_package(libobs REQUIRED)
 find_package(obs-frontend-api REQUIRED)
-find_package(Qt6 REQUIRED COMPONENTS Core Widgets)
+find_package(Qt6 REQUIRED COMPONENTS Core Network Widgets)
 
 add_subdirectory(lib/caption_stream)
 
@@ -41,6 +41,7 @@ target_sources(
     src/CaptionResultHandler.cpp
     src/google_s2t_caption_plugin.cpp
     src/CaptionPluginManager.cpp
+    src/TikTokCaptionServer.cpp
     src/ui/CaptionDock.cpp
     src/ui/OpenCaptionSettingsWidget.cpp
     src/ui/MainCaptionWidget.h
@@ -51,6 +52,7 @@ target_sources(
     src/CaptionResultHandler.h
     src/caption_output_writer.h
     src/CaptionPluginManager.h
+    src/TikTokCaptionServer.h
     src/ui/CaptionDock.h
     src/ui/OpenCaptionSettingsWidget.h
     src/resources/obs.qrc
@@ -69,7 +71,7 @@ endif()
 
 target_link_libraries(
   ${CMAKE_PROJECT_NAME}
-  PRIVATE caption_stream Qt6::Core Qt6::Widgets OBS::libobs OBS::obs-frontend-api
+  PRIVATE caption_stream Qt6::Core Qt6::Network Qt6::Widgets OBS::libobs OBS::obs-frontend-api
 )
 
 set_target_properties(
@@ -106,4 +108,22 @@ if(BUILD_TESTING)
       $<TARGET_FILE_DIR:english-term-replacements-test>
   )
   add_test(NAME english-term-replacements COMMAND english-term-replacements-test)
+
+  add_executable(
+    tiktok-caption-server-test
+    tests/tiktok_caption_server_test.cpp
+    src/TikTokCaptionServer.cpp
+    src/TikTokCaptionServer.h
+  )
+  set_target_properties(tiktok-caption-server-test PROPERTIES AUTOMOC ON)
+  target_include_directories(tiktok-caption-server-test PRIVATE src lib/caption_stream)
+  target_link_libraries(tiktok-caption-server-test PRIVATE caption_stream Qt6::Core Qt6::Network)
+  add_custom_command(
+    TARGET tiktok-caption-server-test
+    POST_BUILD
+    COMMAND
+      ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Qt6::Core> $<TARGET_FILE:Qt6::Network>
+      $<TARGET_FILE_DIR:tiktok-caption-server-test>
+  )
+  add_test(NAME tiktok-caption-server COMMAND tiktok-caption-server-test)
 endif()
