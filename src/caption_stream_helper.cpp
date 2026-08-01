@@ -21,6 +21,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include <utils.h>
 #include "storage_utils.h"
 #include "CaptionPluginSettings.h"
+#include "EnglishTermReplacements.h"
 #include <util/util.hpp>
 #include <util/platform.h>
 #include "ui/uiutils.h"
@@ -76,7 +77,7 @@ static CaptionFormatSettings default_CaptionFormatSettings() {
             CAPITALIZATION_NORMAL,
             false,
             false,
-            emptyDefaultReplacer(),
+            makeDefaultReplacer(default_english_term_replacements()),
             true,
             15.0,
     };
@@ -163,6 +164,7 @@ static CaptionPluginSettings default_CaptionPluginSettings() {
 static bool isValidWordReplacementTypeString(const string &type) {
     return (type == "text_case_insensitive"
             || type == "text_case_sensitive"
+            || type == "whole_word_case_insensitive"
             || type == "regex_case_insensitive"
             || type == "regex_case_sensitive");
 }
@@ -417,6 +419,9 @@ static CaptionPluginSettings get_CaptionPluginSettings_from_data(obs_data_t *loa
             }
         }
     }
+    const string saved_plugin_version = obs_data_get_string(load_data, "plugin_version");
+    if (saved_plugin_version.empty() || saved_plugin_version == "0.35.0" || saved_plugin_version == "0.36.0")
+        append_missing_english_term_replacements(word_reps);
     source_settings.format_settings.replacer = makeDefaultReplacer(word_reps);
 
     source_settings.scene_collection_settings = get_SceneCollectionSettings_from_data(load_data);

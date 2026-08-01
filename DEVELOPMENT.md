@@ -52,18 +52,18 @@ For normal installation or an update, extract the ZIP, close OBS, and run `Insta
 %ProgramData%\obs-studio\plugins\
 ```
 
-On first install, the script downloads the pinned Russian T-One model (about 128 MB), verifies the archive SHA-256, and writes per-file hashes beside the model. On subsequent updates it preserves a complete previously installed model. Keep the existing caption plugin installed separately until feature parity is verified. Do not commit API keys or a populated `CMakeUserPresets.json`.
+On first install, the script downloads the pinned Russian T-One model (about 128 MB), verifies the archive SHA-256, and writes hashes for its model and token files beside the model. On subsequent updates it preserves only a complete, hash-verified previously installed model. Keep the existing caption plugin installed separately until feature parity is verified. Do not commit API keys or a populated `CMakeUserPresets.json`.
 
 ## Local engine resource policy
 
 - CPU provider only; the GPU and VRAM are never requested.
 - One ONNX Runtime inference thread.
-- OBS delivers 8 kHz mono PCM to the Russian T-One model.
+- OBS delivers 8 kHz mono PCM to the Russian T-One model. Automatic language detection is intentionally disabled.
 - The OBS audio callback adds only to a bounded one-second queue; the local worker runs at below-normal Windows priority and drops old queued audio rather than delaying OBS.
 
 ## Current limitations
 
-- The local Russian T-One streaming adapter is the packaged default. The legacy Google adapter remains compiled only as a compatibility path and its API-key UI is disabled in the standard preset.
+- The local Russian T-One streaming adapter is the packaged default. Common streaming product names are restored to Latin script by an editable starter replacement dictionary. The legacy Google adapter remains compiled only as a compatibility path and its API-key UI is disabled in the standard preset.
 - The inherited source has a sizeable compiler-warning backlog; warnings are recorded but are not yet treated as errors.
 - The staged package passed the build/test pipeline, an isolated model-install/update smoke test, and an official 6.4-second Russian sample decode with one CPU thread (RTF 0.062). A full live-microphone OBS acceptance test remains to be performed by the streamer before a public release.
 - The current build configuration is Windows x64 only.

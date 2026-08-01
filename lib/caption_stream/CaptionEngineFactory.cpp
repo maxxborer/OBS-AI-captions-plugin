@@ -41,7 +41,7 @@ CaptionEngineCreationResult CaptionEngineFactory::create(
                 return {
                         nullptr,
                         CaptionEngineCreationStatus::ConstructionFailed,
-                        "The local caption engine constructor raised an unknown error.",
+                        "The local Russian caption engine constructor raised an unknown error.",
                 };
             }
         case CaptionEngineType::GoogleHttpLegacy:

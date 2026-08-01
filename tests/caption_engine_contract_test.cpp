@@ -4,6 +4,11 @@
 #include "ContinuousCaptions.h"
 #include "CaptionEngineFactory.h"
 
+static_assert(static_cast<int>(CaptionEngineType::LocalSherpaTOne) == 0,
+              "Saved local-engine settings must keep the Russian T-One engine selected.");
+static_assert(static_cast<int>(CaptionEngineType::GoogleHttpLegacy) == 1,
+              "Saved legacy Google-engine settings must keep their existing value.");
+
 class FakeCaptionEngine final : public CaptionEngine {
 public:
     bool queue_audio_data(const char *data, unsigned int data_size) override {

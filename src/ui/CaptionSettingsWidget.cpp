@@ -77,6 +77,7 @@ static int combobox_set_data_str(QComboBox &combo_box, const char *data, int def
 
 QComboBox *wordReplacementTypeComboBox(const char *default_text) {
     auto *cb = new QComboBox();
+    cb->addItem("Слово целиком", "whole_word_case_insensitive");
     cb->addItem("Text", "text_case_insensitive"); //(Ignore Case)
 //    cb->addItem("Text", "text_case_sensitive");
     cb->addItem("Regex", "regex_case_insensitive"); //(Ignore Case)
@@ -645,7 +646,7 @@ void CaptionSettingsWidget::on_replacementWordsAddWordPushButton_clicked() {
     const int row = wordReplacementTableWidget->rowCount();
     wordReplacementTableWidget->setRowCount(row + 1);
     wordReplacementTableWidget->setCellWidget(row, WORD_REPLACEMENT_TYPE_INDEX,
-                                              wordReplacementTypeComboBox("text_case_insensitive"));
+                                              wordReplacementTypeComboBox("whole_word_case_insensitive"));
     wordReplacementTableWidget->setCellWidget(row, WORD_REPLACEMENT_DELETE_INDEX,
                                               wordReplacementDeletePushButton(wordReplacementTableWidget));
 }

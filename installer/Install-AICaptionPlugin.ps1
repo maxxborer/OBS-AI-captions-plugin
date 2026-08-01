@@ -31,21 +31,53 @@ function Get-Sha256([string] $Path) {
     return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
 }
 
+function Get-RequiredModelFileMarkers([string] $ModelPath, $Manifest) {
+    $fileMarkers = @()
+    foreach ($relativePath in @($Manifest.requiredFiles)) {
+        if ([string]::IsNullOrWhiteSpace([string] $relativePath)) {
+            throw 'The local model manifest contains an invalid required file name.'
+        }
+        $filePath = Assert-ChildPath (Join-Path $ModelPath $relativePath) $ModelPath
+        if (-not (Test-Path -LiteralPath $filePath -PathType Leaf)) {
+            throw "The downloaded archive does not contain the required local model file: $relativePath"
+        }
+        $fileMarkers += [ordered]@{
+            path = $relativePath
+            sha256 = Get-Sha256 $filePath
+        }
+    }
+    return $fileMarkers
+}
+
 function Test-InstalledModel([string] $ModelPath, $Manifest) {
     $markerPath = Join-Path $ModelPath '.ai-caption-model.json'
-    $modelPath = Join-Path $ModelPath 'model.onnx'
-    $tokensPath = Join-Path $ModelPath 'tokens.txt'
-    if (-not ((Test-Path -LiteralPath $markerPath -PathType Leaf) -and
-              (Test-Path -LiteralPath $modelPath -PathType Leaf) -and
-              (Test-Path -LiteralPath $tokensPath -PathType Leaf))) {
+    if (-not (Test-Path -LiteralPath $markerPath -PathType Leaf)) {
         return $false
     }
 
     try {
         $marker = Get-Content -LiteralPath $markerPath -Raw | ConvertFrom-Json
-        return $marker.archiveSha256 -eq $Manifest.sha256 -and
-               $marker.modelOnnxSha256 -eq (Get-Sha256 $modelPath) -and
-               $marker.tokensSha256 -eq (Get-Sha256 $tokensPath)
+        if ($marker.archiveSha256 -ne $Manifest.sha256) {
+            return $false
+        }
+
+        $markerFiles = @($marker.files)
+        $requiredFiles = @($Manifest.requiredFiles)
+        if ($requiredFiles.Count -eq 0 -or $markerFiles.Count -ne $requiredFiles.Count) {
+            return $false
+        }
+
+        foreach ($relativePath in $requiredFiles) {
+            $filePath = Assert-ChildPath (Join-Path $ModelPath $relativePath) $ModelPath
+            if (-not (Test-Path -LiteralPath $filePath -PathType Leaf)) {
+                return $false
+            }
+            $fileMarker = @($markerFiles | Where-Object { $_.path -eq $relativePath })
+            if ($fileMarker.Count -ne 1 -or $fileMarker[0].sha256 -ne (Get-Sha256 $filePath)) {
+                return $false
+            }
+        }
+        return $true
     }
     catch {
         return $false
@@ -56,7 +88,7 @@ function Install-LocalModel([string] $PluginDirectory, $Manifest) {
     $modelsDirectory = Join-Path $PluginDirectory 'data\models'
     $modelDirectory = Assert-ChildPath (Join-Path $modelsDirectory $Manifest.modelDirectory) $PluginDirectory
     if (Test-InstalledModel $modelDirectory $Manifest) {
-        Write-Host 'Локальная русская модель уже установлена и прошла проверку.'
+        Write-Host 'Быстрая локальная русская модель уже установлена и прошла проверку.'
         return
     }
 
@@ -71,7 +103,7 @@ function Install-LocalModel([string] $PluginDirectory, $Manifest) {
     $extractedModelDirectory = Join-Path $extractRoot $Manifest.modelDirectory
 
     try {
-        Write-Host 'Скачиваю локальную русскую модель (около 128 МБ)...'
+        Write-Host 'Скачиваю быструю локальную русскую модель (около 128 МБ)...'
         Invoke-WebRequest -Uri $Manifest.url -OutFile $downloadPath
         if ((Get-Sha256 $downloadPath) -ne $Manifest.sha256) {
             throw 'Downloaded model SHA-256 does not match the signed release manifest.'
@@ -82,15 +114,11 @@ function Install-LocalModel([string] $PluginDirectory, $Manifest) {
         if ($LASTEXITCODE -ne 0) {
             throw 'Could not unpack the downloaded local model.'
         }
-        if (-not ((Test-Path -LiteralPath (Join-Path $extractedModelDirectory 'model.onnx') -PathType Leaf) -and
-                  (Test-Path -LiteralPath (Join-Path $extractedModelDirectory 'tokens.txt') -PathType Leaf))) {
-            throw 'The downloaded archive does not contain the expected local model files.'
-        }
 
         $marker = [ordered]@{
+            schemaVersion = 2
             archiveSha256 = $Manifest.sha256
-            modelOnnxSha256 = Get-Sha256 (Join-Path $extractedModelDirectory 'model.onnx')
-            tokensSha256 = Get-Sha256 (Join-Path $extractedModelDirectory 'tokens.txt')
+            files = @(Get-RequiredModelFileMarkers $extractedModelDirectory $Manifest)
         } | ConvertTo-Json
         Set-Content -LiteralPath (Join-Path $extractedModelDirectory '.ai-caption-model.json') -Value $marker -Encoding utf8
 
@@ -98,6 +126,9 @@ function Install-LocalModel([string] $PluginDirectory, $Manifest) {
             Remove-Item -LiteralPath $modelDirectory -Recurse -Force
         }
         Move-Item -LiteralPath $extractedModelDirectory -Destination $modelsDirectory
+        if (-not (Test-InstalledModel $modelDirectory $Manifest)) {
+            throw 'The installed local model did not pass its post-install integrity check.'
+        }
         Write-Host 'Локальная модель установлена и проверена.'
     }
     finally {
@@ -118,7 +149,7 @@ if (-not (Test-Path -LiteralPath $modelManifestPath -PathType Leaf)) {
 }
 
 $manifest = Get-Content -LiteralPath $modelManifestPath -Raw | ConvertFrom-Json
-if (-not ($manifest.url -and $manifest.sha256 -and $manifest.modelDirectory -and $manifest.archiveFile)) {
+if (-not ($manifest.url -and $manifest.sha256 -and $manifest.modelDirectory -and $manifest.archiveFile -and @($manifest.requiredFiles).Count)) {
     throw 'The local model manifest is invalid.'
 }
 
@@ -149,9 +180,7 @@ try {
 
     $existingModelDirectory = Join-Path $pluginDirectory (Join-Path 'data\models' $manifest.modelDirectory)
     if (Test-Path -LiteralPath $existingModelDirectory -PathType Container) {
-        $existingModelReusable = (Test-Path -LiteralPath (Join-Path $existingModelDirectory '.ai-caption-model.json') -PathType Leaf) -and
-                                 (Test-Path -LiteralPath (Join-Path $existingModelDirectory 'model.onnx') -PathType Leaf) -and
-                                 (Test-Path -LiteralPath (Join-Path $existingModelDirectory 'tokens.txt') -PathType Leaf)
+        $existingModelReusable = Test-InstalledModel $existingModelDirectory $manifest
         if ($existingModelReusable) {
             Write-Host 'Найдена проверенная локальная модель; она будет сохранена при обновлении.'
         }
@@ -168,9 +197,7 @@ try {
 
     $installedModelDirectory = Join-Path $pluginDirectory (Join-Path 'data\models' $manifest.modelDirectory)
     if ($existingModelReusable) {
-        if (-not ((Test-Path -LiteralPath (Join-Path $installedModelDirectory '.ai-caption-model.json') -PathType Leaf) -and
-                  (Test-Path -LiteralPath (Join-Path $installedModelDirectory 'model.onnx') -PathType Leaf) -and
-                  (Test-Path -LiteralPath (Join-Path $installedModelDirectory 'tokens.txt') -PathType Leaf))) {
+        if (-not (Test-InstalledModel $installedModelDirectory $manifest)) {
             throw 'The existing local model could not be preserved during the plugin update.'
         }
         Write-Host 'Сохраняю проверенную локальную модель при обновлении.'
@@ -182,7 +209,7 @@ try {
     if ($backupCreated -and (Test-Path -LiteralPath $backupDirectory)) {
         Remove-Item -LiteralPath $backupDirectory -Recurse -Force
     }
-    Write-Host 'AI Caption Plugin обновлён. Запускайте OBS — Google API не требуется.'
+    Write-Host 'AI Caption Plugin обновлён. Быстрая русская модель установлена и выбрана автоматически; Google API не требуется.'
 }
 catch {
     if ($backupCreated -and (Test-Path -LiteralPath $backupDirectory)) {

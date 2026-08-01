@@ -24,8 +24,9 @@ GNU General Public License for more details.
 struct ContinuousCaptionStreamSettings;
 
 enum class CaptionEngineType {
-    LocalSherpaTOne,
-    GoogleHttpLegacy,
+    // Value 0 preserves existing local-engine settings across upgrades.
+    LocalSherpaTOne = 0,
+    GoogleHttpLegacy = 1,
 };
 
 enum class CaptionEngineCreationStatus {

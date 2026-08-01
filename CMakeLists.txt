@@ -94,4 +94,16 @@ if(BUILD_TESTING)
   target_link_libraries(caption-engine-contract-test PRIVATE caption_stream)
   sherpa_onnx_copy_runtime(caption-engine-contract-test)
   add_test(NAME caption-engine-contract COMMAND caption-engine-contract-test)
+
+  add_executable(english-term-replacements-test tests/english_term_replacements_test.cpp)
+  target_include_directories(english-term-replacements-test PRIVATE src)
+  target_link_libraries(english-term-replacements-test PRIVATE Qt6::Core)
+  add_custom_command(
+    TARGET english-term-replacements-test
+    POST_BUILD
+    COMMAND
+      ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Qt6::Core>
+      $<TARGET_FILE_DIR:english-term-replacements-test>
+  )
+  add_test(NAME english-term-replacements COMMAND english-term-replacements-test)
 endif()
