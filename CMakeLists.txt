@@ -83,6 +83,7 @@ set_target_properties_plugin(${CMAKE_PROJECT_NAME})
 install(FILES ${SHERPA_ONNX_RUNTIME_FILES} DESTINATION "${CMAKE_PROJECT_NAME}/bin/64bit")
 install(
   FILES
+    installer/Install-AICaptionPlugin.cmd
     installer/Install-AICaptionPlugin.ps1
     installer/local-model.json
   DESTINATION "${CMAKE_PROJECT_NAME}"
@@ -91,6 +92,15 @@ sherpa_onnx_copy_runtime(${CMAKE_PROJECT_NAME})
 
 include(CTest)
 if(BUILD_TESTING)
+  if(WIN32)
+    add_test(
+      NAME installer-compatibility
+      COMMAND
+        powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/installer_compatibility_test.ps1"
+    )
+  endif()
+
   add_executable(caption-engine-contract-test tests/caption_engine_contract_test.cpp)
   target_include_directories(caption-engine-contract-test PRIVATE lib/caption_stream)
   target_link_libraries(caption-engine-contract-test PRIVATE caption_stream)
