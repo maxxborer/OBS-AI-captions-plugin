@@ -2,11 +2,13 @@
 
 This local branch modernizes the original Closed Captioning OBS Plugin for OBS 32 and now ships a local Russian speech-recognition engine. It does not require a Google API key or use the GPU. See [DEVELOPMENT.md](DEVELOPMENT.md) for the verified Windows build and [MODERNIZATION_PLAN.md](MODERNIZATION_PLAN.md) for the roadmap.
 
-## Local Windows installation (v0.38.0)
+## Local Windows installation (v0.38.1)
 
 1. Close OBS completely.
-2. Extract `AI-Caption-Plugin-0.38.0-windows-x64.zip`.
-3. Run `ai-caption-plugin\Install-AICaptionPlugin.ps1` from the extracted folder.
+2. Extract `AI-Caption-Plugin-0.38.1-windows-x64.zip`.
+3. Run `ai-caption-plugin\Install-AICaptionPlugin.cmd` from the extracted folder.
+
+The `.cmd` launcher uses the built-in Windows PowerShell only for this installation process, so downloaded unsigned scripts work under the default `RemoteSigned` policy without changing the computer-wide execution policy. The PowerShell installer remains available for managed deployments.
 
 The installer requests permission only to update this plugin under `%ProgramData%\obs-studio\plugins\`, downloads the Russian model on first install (about 128 MB), validates its SHA-256, and retains the verified model when the plugin is updated. The model runs with one CPU inference thread at below-normal Windows thread priority; it does not consume GPU or VRAM.
 

@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [string] $ObsPluginRoot = (Join-Path $env:ProgramData 'obs-studio\plugins')
 )
