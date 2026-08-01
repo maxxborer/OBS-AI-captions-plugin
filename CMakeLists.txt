@@ -114,8 +114,9 @@ if(BUILD_TESTING)
     tests/tiktok_caption_server_test.cpp
     src/TikTokCaptionServer.cpp
     src/TikTokCaptionServer.h
+    src/resources/obs.qrc
   )
-  set_target_properties(tiktok-caption-server-test PROPERTIES AUTOMOC ON)
+  set_target_properties(tiktok-caption-server-test PROPERTIES AUTOMOC ON AUTORCC ON)
   target_include_directories(tiktok-caption-server-test PRIVATE src lib/caption_stream)
   target_link_libraries(tiktok-caption-server-test PRIVATE caption_stream Qt6::Core Qt6::Network)
   add_custom_command(

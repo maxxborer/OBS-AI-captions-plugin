@@ -41,6 +41,7 @@ public:
 
     static QByteArray build_state_json(const QString &text, bool final, std::uint64_t revision);
     static QByteArray build_overlay_html();
+    static QByteArray build_designer_html();
 
 private:
     QTcpServer server;

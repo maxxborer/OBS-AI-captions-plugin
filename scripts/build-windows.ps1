@@ -25,7 +25,11 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Install staging failed.' }
 
     Compress-Archive -Path (Join-Path $releaseRoot 'ai-caption-plugin') -DestinationPath $packagePath -Force
+    $packageHash = (Get-FileHash -LiteralPath $packagePath -Algorithm SHA256).Hash.ToLowerInvariant()
+    $hashPath = "$packagePath.sha256"
+    Set-Content -LiteralPath $hashPath -Value "$packageHash *$([System.IO.Path]::GetFileName($packagePath))" -Encoding ascii -NoNewline
     Write-Host "Package: $packagePath"
+    Write-Host "SHA-256: $packageHash"
 }
 finally {
     Pop-Location
