@@ -22,6 +22,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include <vector>
 #include <regex>
 #include <QString>
+#include <QRegularExpression>
 
 using namespace std;
 
@@ -63,7 +64,9 @@ public:
 class Rep {
 private:
     bool use_text;
+    bool use_qt_regex;
     std::regex reg;
+    QRegularExpression qt_reg;
     string reg_to;
     QString text_from;
     QString text_to;
@@ -71,10 +74,13 @@ private:
 public:
 
     Rep(const regex &reg, const string &to) :
-            use_text(false), reg(reg), reg_to(to) {}
+            use_text(false), use_qt_regex(false), reg(reg), reg_to(to), text_case_sensitive(false) {}
+
+    Rep(const QRegularExpression &reg, const string &to) :
+            use_text(false), use_qt_regex(true), qt_reg(reg), reg_to(to), text_case_sensitive(false) {}
 
     Rep(const string &from, const string &to, bool case_sensitive) :
-            use_text(true), text_from(QString::fromStdString(from)), text_to(QString::fromStdString(to)),
+            use_text(true), use_qt_regex(false), text_from(QString::fromStdString(from)), text_to(QString::fromStdString(to)),
             text_case_sensitive(case_sensitive) {}
 
     string replace(const string &input) const {
@@ -86,6 +92,8 @@ public:
                 return QString::fromStdString(input).replace(text_from, text_to, Qt::CaseSensitive).toStdString();
             else
                 return QString::fromStdString(input).replace(text_from, text_to, Qt::CaseInsensitive).toStdString();
+        } else if (use_qt_regex) {
+            return QString::fromStdString(input).replace(qt_reg, QString::fromStdString(reg_to)).toStdString();
         } else {
             return std::regex_replace(input, reg, reg_to);
         }
@@ -129,6 +137,14 @@ private:
                     regs.push_back(Rep(rep.from, rep.to, true));
                 } else if (rep.type == "text_case_insensitive") {
                     regs.push_back(Rep(rep.from, rep.to, false));
+                } else if (rep.type == "whole_word_case_insensitive") {
+                    const QString escaped = QRegularExpression::escape(QString::fromStdString(rep.from));
+                    const QRegularExpression expression(
+                            "(?<![\\p{L}\\p{N}_])" + escaped + "(?![\\p{L}\\p{N}_])",
+                            QRegularExpression::CaseInsensitiveOption | QRegularExpression::UseUnicodePropertiesOption);
+                    if (!expression.isValid())
+                        throw string("invalid whole-word replacement: " + rep.from);
+                    regs.push_back(Rep(expression, rep.to));
                 } else if (rep.type == "regex_case_sensitive") {
                     regs.push_back(Rep(regex(rep.from), rep.to));
                 } else if (rep.type == "regex_case_insensitive") {

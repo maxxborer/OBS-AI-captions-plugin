@@ -8,6 +8,7 @@
 
 #include "CaptionPluginSettings.h"
 #include "SourceCaptioner.h"
+#include "TikTokCaptionServer.h"
 
 struct CaptioningState {
     bool external_is_streaming = false;
@@ -23,6 +24,7 @@ struct CaptioningState {
     bool is_captioning_preview = false;
     bool is_captioning_text_output = false;
     bool is_captioning_file_output = false;
+    bool is_captioning_tiktok_overlay = false;
     string captioning_scene_collection_name = "";
 };
 
@@ -32,6 +34,7 @@ Q_OBJECT
 public:
     CaptionPluginSettings plugin_settings;
     SourceCaptioner source_captioner;
+    TikTokCaptionServer tiktok_caption_server;
     CaptioningState state;
 
 private:

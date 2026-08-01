@@ -1,3 +1,46 @@
+## AI Caption Plugin (modernization branch)
+
+This local branch modernizes the original Closed Captioning OBS Plugin for OBS 32 and now ships a local Russian speech-recognition engine. It does not require a Google API key or use the GPU. See [DEVELOPMENT.md](DEVELOPMENT.md) for the verified Windows build and [MODERNIZATION_PLAN.md](MODERNIZATION_PLAN.md) for the roadmap.
+
+## Local Windows installation (v0.38.0)
+
+1. Close OBS completely.
+2. Extract `AI-Caption-Plugin-0.38.0-windows-x64.zip`.
+3. Run `ai-caption-plugin\Install-AICaptionPlugin.ps1` from the extracted folder.
+
+The installer requests permission only to update this plugin under `%ProgramData%\obs-studio\plugins\`, downloads the Russian model on first install (about 128 MB), validates its SHA-256, and retains the verified model when the plugin is updated. The model runs with one CPU inference thread at below-normal Windows thread priority; it does not consume GPU or VRAM.
+
+## TikTok-style captions for a vertical scene
+
+The plugin serves a private overlay while OBS is open. It never leaves the computer. Open the visual designer at `http://127.0.0.1:37545/setup`, choose the font, size, weight, text and outline colors, active-word colors, alignment, maximum word count, and timeout, then copy the generated URL into an Aitum Vertical **Browser Source**.
+
+The initial preset uses the bundled **Geologica** variable font and a purple active-word background. Geologica does not need to be installed in Windows. Give the Browser Source the text-box size you want (for example 1000 × 320), then place and scale it anywhere using the normal OBS/Aitum transform controls. The page does not force a canvas position.
+
+The Browser Source's **Custom CSS** field remains available for advanced overrides. For example:
+
+```css
+:root {
+  --caption-font: "Geologica", sans-serif;
+  --caption-font-size: 68px;
+  --caption-font-weight: 900;
+  --caption-color: #ffffff;
+  --caption-outline-color: #000000;
+  --caption-outline-width: 5px;
+  --caption-align: center;
+  --caption-transform: uppercase;
+  --active-color: #ffffff;
+  --active-background: #8b5cf6;
+  --active-radius: 14px;
+  --active-scale: 1.06;
+}
+```
+
+You can override `.word` and `.word.active` directly for unrestricted styling. The bundled Geologica font is distributed under the SIL Open Font License; its license is included in the plugin resources and exposed locally at `http://127.0.0.1:37545/licenses/geologica`.
+
+Keep the plugin enabled and select the microphone as the caption audio source. Captioning starts automatically when streaming, even if native Twitch captions are disabled.
+
+The legacy Google backend remains in the source tree for compatibility work, but the packaged build defaults to local recognition and does not display a Google API-key field.
+
 ## Closed Captioning OBS Plugin
 
 Provides closed captioning via Google Cloud Speech Recognition API as a standalone OBS plugin, no other tools required. 

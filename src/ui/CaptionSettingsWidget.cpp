@@ -77,6 +77,7 @@ static int combobox_set_data_str(QComboBox &combo_box, const char *data, int def
 
 QComboBox *wordReplacementTypeComboBox(const char *default_text) {
     auto *cb = new QComboBox();
+    cb->addItem("Слово целиком", "whole_word_case_insensitive");
     cb->addItem("Text", "text_case_insensitive"); //(Ignore Case)
 //    cb->addItem("Text", "text_case_sensitive");
     cb->addItem("Regex", "regex_case_insensitive"); //(Ignore Case)
@@ -182,9 +183,11 @@ CaptionSettingsWidget::CaptionSettingsWidget(const CaptionPluginSettings &latest
 #if ENABLE_CUSTOM_API_KEY
     this->apiKeyLabel->show();
     this->apiKeyWidget->show();
+    this->localModelStatusLabel->hide();
 #else
     this->apiKeyLabel->hide();
     this->apiKeyWidget->hide();
+    this->localModelStatusLabel->show();
 #endif
 
     captionWhenComboBox->addItem("Caption Source is heard on stream", "own_source");
@@ -196,6 +199,10 @@ CaptionSettingsWidget::CaptionSettingsWidget(const CaptionPluginSettings &latest
     setup_combobox_capitalization(*srtCapitalizationComboBox);
     setup_combobox_output_target(*outputTargetComboBox, true);
     setup_combobox_transcript_format(*transcriptFormatComboBox);
+
+    languageComboBox->setEnabled(false);
+    profanitFilterLabel->hide();
+    profanityFilterComboBox->hide();
 
     setup_combobox_recording_filename(*recordingTranscriptFilenameComboBox);
     setup_combobox_streaming_filename(*streamingTranscriptFilenameComboBox);
@@ -639,7 +646,7 @@ void CaptionSettingsWidget::on_replacementWordsAddWordPushButton_clicked() {
     const int row = wordReplacementTableWidget->rowCount();
     wordReplacementTableWidget->setRowCount(row + 1);
     wordReplacementTableWidget->setCellWidget(row, WORD_REPLACEMENT_TYPE_INDEX,
-                                              wordReplacementTypeComboBox("text_case_insensitive"));
+                                              wordReplacementTypeComboBox("whole_word_case_insensitive"));
     wordReplacementTableWidget->setCellWidget(row, WORD_REPLACEMENT_DELETE_INDEX,
                                               wordReplacementDeletePushButton(wordReplacementTableWidget));
 }

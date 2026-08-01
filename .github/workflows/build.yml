@@ -1,0 +1,59 @@
+name: Build AI Caption Plugin
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    name: Windows x64 / OBS 32.2.1
+    runs-on: windows-2022
+    timeout-minutes: 60
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Build, test, and package
+        shell: pwsh
+        run: ./scripts/build-windows.ps1 -Configuration RelWithDebInfo
+
+      - name: Upload Windows package
+        uses: actions/upload-artifact@v4
+        with:
+          name: AI-Caption-Plugin-Windows-x64
+          path: |
+            release/AI-Caption-Plugin-*-windows-x64.zip
+            release/AI-Caption-Plugin-*-windows-x64.zip.sha256
+          if-no-files-found: error
+          retention-days: 30
+
+  release:
+    name: Publish GitHub Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: windows
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download Windows package
+        uses: actions/download-artifact@v4
+        with:
+          name: AI-Caption-Plugin-Windows-x64
+          path: release-assets
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          gh release create "${GITHUB_REF_NAME}"
+          release-assets/*
+          --repo "${GITHUB_REPOSITORY}"
+          --title "AI Caption Plugin ${GITHUB_REF_NAME}"
+          --generate-notes
+          --verify-tag

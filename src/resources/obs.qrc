@@ -4,4 +4,10 @@
   <qresource prefix="/settings">
     <file>images/settings/general.svg</file>
   </qresource>
+  <qresource prefix="/fonts">
+    <file alias="geologica.ttf">fonts/Geologica-Variable.ttf</file>
+  </qresource>
+  <qresource prefix="/licenses">
+    <file alias="geologica-ofl.txt">fonts/Geologica-OFL.txt</file>
+  </qresource>
 </RCC>
