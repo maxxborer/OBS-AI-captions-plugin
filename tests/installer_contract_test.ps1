@@ -23,7 +23,9 @@ $launcher = Get-Content -LiteralPath $launcherPath -Raw
 $requiredLauncherFragments = @(
     'pwsh.exe',
     '-NoProfile',
-    '"%~dp0Install-AICaptionPlugin.ps1"',
+    'set "AI_CAPTION_INSTALLER_SCRIPT=%~dp0Install-AICaptionPlugin.ps1"',
+    'Unblock-File -LiteralPath $env:AI_CAPTION_INSTALLER_SCRIPT',
+    '-File "%AI_CAPTION_INSTALLER_SCRIPT%"',
     '%*'
 )
 foreach ($fragment in $requiredLauncherFragments) {
@@ -33,6 +35,42 @@ foreach ($fragment in $requiredLauncherFragments) {
 }
 if ($launcher.Contains('powershell.exe') -or $launcher.Contains('-ExecutionPolicy')) {
     throw 'The installer launcher still contains the retired Windows PowerShell compatibility path.'
+}
+
+$launcherProbeRoot = Join-Path ([System.IO.Path]::GetTempPath()) (
+    'ai-caption-plugin-launcher-test-' + [Guid]::NewGuid().ToString('N')
+)
+$probeLauncherPath = Join-Path $launcherProbeRoot 'Install-AICaptionPlugin.cmd'
+$probeScriptPath = Join-Path $launcherProbeRoot 'Install-AICaptionPlugin.ps1'
+$probeMarkerPath = Join-Path $launcherProbeRoot 'executed.txt'
+$previousProcessPolicy = $env:PSExecutionPolicyPreference
+
+try {
+    New-Item -ItemType Directory -Path $launcherProbeRoot | Out-Null
+    Copy-Item -LiteralPath $launcherPath -Destination $probeLauncherPath
+    [System.IO.File]::WriteAllText(
+        $probeScriptPath,
+        @'
+[CmdletBinding()]
+param([Parameter(Mandatory = $true)][string] $MarkerPath)
+[System.IO.File]::WriteAllText($MarkerPath, 'executed')
+'@
+    )
+    Set-Content -LiteralPath $probeScriptPath -Stream Zone.Identifier -Value "[ZoneTransfer]`r`nZoneId=3"
+
+    $env:PSExecutionPolicyPreference = 'RemoteSigned'
+    & $probeLauncherPath -MarkerPath $probeMarkerPath
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $probeMarkerPath -PathType Leaf)) {
+        throw 'The launcher could not run an internet-marked package under RemoteSigned.'
+    }
+    if (@(Get-Item -LiteralPath $probeScriptPath -Stream Zone.Identifier -ErrorAction SilentlyContinue).Count -ne 0) {
+        throw 'The launcher did not remove the internet zone marker from its installer script.'
+    }
+} finally {
+    $env:PSExecutionPolicyPreference = $previousProcessPolicy
+    if (Test-Path -LiteralPath $launcherProbeRoot) {
+        Remove-Item -LiteralPath $launcherProbeRoot -Recurse -Force
+    }
 }
 
 $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
