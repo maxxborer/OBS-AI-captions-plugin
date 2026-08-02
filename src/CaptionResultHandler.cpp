@@ -1,150 +1,195 @@
-/******************************************************************************
-Copyright (C) 2019 by <rat.with.a.compiler@gmail.com>
-
-This program is free software; you can redistribute it and/or
-modify it under the terms of the GNU General Public License
-as published by the Free Software Foundation; either version 2
-of the License, or (at your option) any later version.
-
-This program is distributed in the hope that it will be useful,
-but WITHOUT ANY WARRANTY; without even the implied warranty of
-MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-GNU General Public License for more details.
-
-You should have received a copy of the GNU General Public License
-along with this program.  If not, see <http://www.gnu.org/licenses/>.
-******************************************************************************/
-
-
 #include "CaptionResultHandler.h"
-#include "log.h"
-#include <sstream>
-#include <cctype>
-#include <iostream>
-#include <vector>
-#include <utils.h>
+
+#include "EnglishTermReplacements.h"
 #include "stringutils.h"
 
+#include <algorithm>
+#include <cctype>
+#include <chrono>
+#include <cstdint>
 
-shared_ptr<OutputCaptionResult> CaptionResultHandler::prepare_caption_output(
-        const CaptionResult &caption_result,
-        const bool fillup_with_previous,
-        const bool insert_newlines,
-        const bool punctuation,
-        const uint line_length,
-        const uint targeted_line_count,
-        const CapitalizationType capitalization,
-        const bool interrupted,
-        const std::vector<std::shared_ptr<OutputCaptionResult>> &result_history
-) {
+namespace {
+bool decode_utf8(
+        const std::string &text,
+        std::size_t &position,
+        std::uint32_t &code_point) {
+    if (position >= text.size())
+        return false;
 
-    shared_ptr<OutputCaptionResult> output_result = make_shared<OutputCaptionResult>(caption_result, interrupted);
-
-    try {
-//        debug_log("caption: %s", res.caption_text.c_str());
-        const uint max_length = targeted_line_count * line_length;
-        string cleaned_line = caption_result.caption_text;
-
-        if (settings.replacer.has_replacements()) {
-            try {
-                string tmp = settings.replacer.get_replacer().replace(caption_result.caption_text);
-
-                if (caption_result.caption_text != tmp) {
-                    info_log("modified string '%s' -> '%s'", caption_result.caption_text.c_str(), tmp.c_str());
-                    cleaned_line = tmp;
-                }
-            }
-            catch (exception ex) {
-                error_log("string replacement error %s: '%s'", ex.what(), caption_result.caption_text.c_str());
-            }
-            catch (...) {
-                error_log("string replacement error '%s'", caption_result.caption_text.c_str());
-            }
-        }
-        lstrip(cleaned_line);
-        output_result->clean_caption_text = cleaned_line;
-
-        vector<string> all_lines;
-        if (fillup_with_previous) {
-            string filled_line = cleaned_line;
-            if (punctuation && capitalization == CAPITALIZATION_NORMAL && !filled_line.empty() && isascii(filled_line[0]))
-                filled_line[0] = toupper(filled_line[0]);
-
-            if (filled_line.size() < max_length && !result_history.empty()) {
-                for (auto i = result_history.rbegin(); i != result_history.rend(); ++i) {
-                    if (!*i)
-                        break;
-
-                    if (!(*i)->caption_result.final)
-                        // had interruption here, ignore
-                        break;
-
-                    if (settings.caption_timeout_enabled) {
-                        double secs_since_last = std::chrono::duration_cast<std::chrono::duration<double >>
-                                (std::chrono::steady_clock::now() - (*i)->caption_result.received_at).count();
-
-                        if (secs_since_last > settings.caption_timeout_seconds) {
-//                            debug_log("not filling, too old %f >= %f", secs_since_last, settings.caption_timeout_seconds);
-                            break;
-                        }
-                    }
-
-                    if (punctuation)
-                        filled_line.insert(0, ". ");
-                    else
-                        filled_line.insert(0, 1, ' ');
-
-                    filled_line.insert(0, (*i)->clean_caption_text);
-
-                    if (punctuation && capitalization == CAPITALIZATION_NORMAL && !filled_line.empty() && isascii(filled_line[0]))
-                        filled_line[0] = toupper(filled_line[0]);
-
-//                    debug_log("filled up with previous text %lu, %lu", filled_line.size(), (*i)->clean_caption_text.size());
-//                    debug_log("filled up with previous text added '%s', filled: '%s'",
-//                              (*i)->clean_caption_text.c_str(), filled_line.c_str());
-
-                    if (filled_line.size() >= max_length)
-                        break;
-                }
-            }
-            string_capitalization(filled_line, capitalization);
-            split_into_lines(all_lines, filled_line, line_length);
-        } else {
-            string_capitalization(cleaned_line, capitalization);
-            split_into_lines(all_lines, cleaned_line, line_length);
-        }
-
-        const uint use_lines_cnt = all_lines.size() > targeted_line_count ? targeted_line_count : all_lines.size();
-        output_result->output_lines.insert(output_result->output_lines.end(), all_lines.end() - use_lines_cnt, all_lines.end());
-
-        if (!output_result->output_lines.empty()) {
-            string join_char = insert_newlines ? "\n" : " ";
-            join_strings(output_result->output_lines, join_char, output_result->output_line);
-//            info_log("hhmm line: %s", output_result->output_line.c_str());
-        }
-
-//        debug_log("lines: %lu", output_result->output_lines.size());
-//        for (const auto &line: output_result->output_lines)
-//            debug_log("line: %s", line.c_str());
-//        debug_log("");an
-
-        return output_result;
-
-    } catch (string &ex) {
-        info_log("couldn't parse caption message. Error: '%s'. Messsage: '%s'", ex.c_str(), caption_result.caption_text.c_str());
-        return nullptr;
+    const auto first = static_cast<unsigned char>(text[position]);
+    std::size_t length;
+    std::uint32_t minimum;
+    if (first <= 0x7f) {
+        length = 1;
+        minimum = 0;
+        code_point = first;
+    } else if ((first & 0xe0U) == 0xc0U) {
+        length = 2;
+        minimum = 0x80;
+        code_point = first & 0x1fU;
+    } else if ((first & 0xf0U) == 0xe0U) {
+        length = 3;
+        minimum = 0x800;
+        code_point = first & 0x0fU;
+    } else if ((first & 0xf8U) == 0xf0U) {
+        length = 4;
+        minimum = 0x10000;
+        code_point = first & 0x07U;
+    } else {
+        return false;
     }
-    catch (...) {
-        info_log("couldn't parse caption message. Messsage: '%s'", caption_result.caption_text.c_str());
-        return nullptr;
+
+    if (position + length > text.size())
+        return false;
+    for (std::size_t index = 1; index < length; ++index) {
+        const auto continuation = static_cast<unsigned char>(text[position + index]);
+        if ((continuation & 0xc0U) != 0x80U)
+            return false;
+        code_point = (code_point << 6U) | (continuation & 0x3fU);
+    }
+    if (code_point < minimum || code_point > 0x10ffffU ||
+        (code_point >= 0xd800U && code_point <= 0xdfffU)) {
+        return false;
+    }
+    position += length;
+    return true;
+}
+
+bool is_supported_caption_code_point(std::uint32_t code_point) {
+    if ((code_point >= 0x20U && code_point <= 0x7eU) ||
+        code_point == '\n' || code_point == '\r' || code_point == '\t') {
+        return true;
+    }
+    if ((code_point >= 0x0410U && code_point <= 0x044fU) ||
+        code_point == 0x0401U || code_point == 0x0451U) {
+        return true;
+    }
+
+    switch (code_point) {
+        case 0x00a0U: // non-breaking space
+        case 0x00abU: // left guillemet
+        case 0x00bbU: // right guillemet
+        case 0x2010U:
+        case 0x2011U:
+        case 0x2012U:
+        case 0x2013U:
+        case 0x2014U:
+        case 0x2015U:
+        case 0x2018U:
+        case 0x2019U:
+        case 0x201cU:
+        case 0x201dU:
+        case 0x2026U: // ellipsis
+        case 0x202fU: // narrow non-breaking space
+        case 0x20bdU: // ruble sign
+        case 0x2116U: // numero sign
+            return true;
+        default:
+            return false;
     }
 }
 
+bool contains_only_russian_english_characters(const std::string &text) {
+    std::size_t position = 0;
+    while (position < text.size()) {
+        std::uint32_t code_point = 0;
+        if (!decode_utf8(text, position, code_point) ||
+            !is_supported_caption_code_point(code_point)) {
+            return false;
+        }
+    }
+    return true;
+}
 
-CaptionResultHandler::CaptionResultHandler(CaptionFormatSettings settings) :
-        settings(settings) {
+void uppercase_supported_at(std::string &text, std::size_t position) {
+    if (position >= text.size())
+        return;
 
-//    for (int i = 0; i < banned_words.size(); i++) {
-//        info_log("banned word %d, %s", i, banned_words[i].c_str());
-//    }
+    const std::size_t start = position;
+    std::uint32_t code_point = 0;
+    if (!decode_utf8(text, position, code_point))
+        return;
+
+    if (code_point >= 'a' && code_point <= 'z') {
+        text[start] = static_cast<char>(std::toupper(static_cast<unsigned char>(code_point)));
+        return;
+    }
+
+    if (code_point >= 0x0430U && code_point <= 0x044fU)
+        code_point -= 0x20U;
+    else if (code_point == 0x0451U)
+        code_point = 0x0401U;
+    else
+        return;
+
+    // Every Russian Cyrillic code point above uses exactly two UTF-8 bytes.
+    text[start] = static_cast<char>(0xc0U | (code_point >> 6U));
+    text[start + 1] = static_cast<char>(0x80U | (code_point & 0x3fU));
+}
+}
+
+std::shared_ptr<OutputCaptionResult> CaptionResultHandler::prepare_caption_output(
+        const CaptionResult &caption_result,
+        bool fillup_with_previous,
+        bool insert_newlines,
+        bool punctuation,
+        uint line_length,
+        uint targeted_line_count,
+        bool interrupted,
+        const std::deque<std::shared_ptr<OutputCaptionResult>> &result_history) {
+    auto output = std::make_shared<OutputCaptionResult>(caption_result, interrupted);
+    output->clean_caption_text = restore_common_english_terms(caption_result.caption_text);
+    lstrip(output->clean_caption_text);
+    if (!contains_only_russian_english_characters(output->clean_caption_text))
+        return nullptr;
+
+    std::string text;
+    if (fillup_with_previous) {
+        const std::size_t maximum_length =
+                static_cast<std::size_t>(targeted_line_count) * line_length;
+        std::size_t assembled_size = output->clean_caption_text.size();
+        std::size_t history_start = result_history.size();
+        std::chrono::steady_clock::time_point now;
+        if (settings.caption_timeout_enabled)
+            now = std::chrono::steady_clock::now();
+        for (auto item = result_history.rbegin();
+             assembled_size < maximum_length && item != result_history.rend();
+             ++item) {
+            if (!*item || !(*item)->caption_result.final)
+                break;
+            if (settings.caption_timeout_enabled) {
+                const double age_seconds =
+                        std::chrono::duration_cast<std::chrono::duration<double>>(
+                                now - (*item)->caption_result.received_at)
+                                .count();
+                if (age_seconds > settings.caption_timeout_seconds)
+                    break;
+            }
+
+            --history_start;
+            assembled_size += (*item)->clean_caption_text.size() + (punctuation ? 2 : 1);
+        }
+
+        text.reserve(assembled_size);
+        for (std::size_t index = history_start; index < result_history.size(); ++index) {
+            const std::size_t segment_start = text.size();
+            text.append(result_history[index]->clean_caption_text);
+            if (punctuation)
+                uppercase_supported_at(text, segment_start);
+            text.append(punctuation ? ". " : " ");
+        }
+        const std::size_t current_start = text.size();
+        text.append(output->clean_caption_text);
+        if (punctuation)
+            uppercase_supported_at(text, current_start);
+    } else {
+        text = output->clean_caption_text;
+    }
+
+    std::vector<std::string> all_lines;
+    split_into_lines(all_lines, text, line_length);
+    const std::size_t line_count = std::min<std::size_t>(targeted_line_count, all_lines.size());
+    output->output_lines.assign(all_lines.end() - static_cast<std::ptrdiff_t>(line_count), all_lines.end());
+    join_strings(output->output_lines, insert_newlines ? "\n" : " ", output->output_line);
+    return output;
 }

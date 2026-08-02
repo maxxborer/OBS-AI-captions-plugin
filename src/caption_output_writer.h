@@ -2,24 +2,24 @@
 // Created by Rat on 31.08.19.
 //
 
-#ifndef OBS_GOOGLE_CAPTION_PLUGIN_CAPTION_OUTPUT_WRITER_H
-#define OBS_GOOGLE_CAPTION_PLUGIN_CAPTION_OUTPUT_WRITER_H
+#ifndef AI_CAPTION_PLUGIN_CAPTION_OUTPUT_WRITER_H
+#define AI_CAPTION_PLUGIN_CAPTION_OUTPUT_WRITER_H
 
-#include "thirdparty/cameron314/blockingconcurrentqueue.h"
 #include "log.c"
 #include "SourceCaptioner.h"
 
-static void caption_output_writer_loop(shared_ptr<CaptionOutputControl<int>> control, bool to_stream) {
+#include <chrono>
+
+static void caption_output_writer_loop(shared_ptr<CaptionOutputControl<int>> control) {
     // TODO: minimum_time_between_captions arg to optionally hold next caption if still too soon after previous one
     // just skip in between ones, maybe option to fall behind instead as well?
 
-    string to_what(to_stream ? "streaming" : "recording");
+    const string to_what("streaming");
     info_log("caption_output_writer_loop %s starting", to_what.c_str());
 
     string previous_line;
     CaptionOutput caption_output;
     int active_delay_sec;
-    bool got_item;
     obs_output_t *output = nullptr;
 
     double waited_left_secs = 0;
@@ -49,10 +49,7 @@ static void caption_output_writer_loop(shared_ptr<CaptionOutputControl<int>> con
             continue;
         }
 
-        if (to_stream)
-            output = obs_frontend_get_streaming_output();
-        else
-            output = obs_frontend_get_recording_output();
+        output = obs_frontend_get_streaming_output();
 
         if (!output) {
             info_log("built caption lines, no output 1, not sending, not %s?: '%s'", to_what.c_str(),
@@ -89,15 +86,10 @@ static void caption_output_writer_loop(shared_ptr<CaptionOutputControl<int>> con
             obs_output_release(output);
             output = nullptr;
 
-            std::this_thread::sleep_for(wait_left);
-
-            if (control->stop)
+            if (control->wait_for_stop(wait_left))
                 break;
 
-            if (to_stream)
-                output = obs_frontend_get_streaming_output();
-            else
-                output = obs_frontend_get_recording_output();
+            output = obs_frontend_get_streaming_output();
 
             if (!output) {
                 info_log("built caption lines, no output 2, not sending, not %s?: '%s'", to_what.c_str(),
@@ -110,34 +102,28 @@ static void caption_output_writer_loop(shared_ptr<CaptionOutputControl<int>> con
         // to_what.c_str(), waited_left_secs, caption_output.output_result->output_line.c_str());
 
         const char* txt = caption_output.output_result->output_line.c_str();
-        if (to_stream) {
-            obs_output_t *ignore_output = obs_frontend_get_recording_output();
-            struct Ctx {
-                const char *txt;
-                obs_output_t *ignore_output;
-            };
-            Ctx param = {txt, ignore_output};
+        obs_output_t *ignore_output = obs_frontend_get_recording_output();
+        struct Ctx {
+            const char *txt;
+            obs_output_t *ignore_output;
+        };
+        Ctx param = {txt, ignore_output};
 
-            obs_enum_outputs(
-                [](void *param, obs_output_t *output) {
-                    auto p = (Ctx *) param;
-                    if (output == p->ignore_output) {
+        obs_enum_outputs(
+            [](void *param, obs_output_t *output) {
+                auto p = (Ctx *) param;
+                if (output != p->ignore_output && obs_output_active(output)) {
+                    uint32_t flags = obs_output_get_flags(output);
+                    if ((flags & OBS_OUTPUT_AV) && (flags & OBS_OUTPUT_ENCODED) && (flags & OBS_OUTPUT_SERVICE)) {
+                        obs_output_output_caption_text2(output, p->txt, 0.0);
                     }
-                    if (obs_output_active(output)) {
-                        uint32_t flags = obs_output_get_flags(output);
-                        if ((flags & OBS_OUTPUT_AV) && (flags & OBS_OUTPUT_ENCODED) && (flags & OBS_OUTPUT_SERVICE)) {
-                            obs_output_output_caption_text2(output, p->txt, 0.0);
-                        }
-                    }
-                    return true;
-                },
-                (void *) &param
-            );
-            if (ignore_output != nullptr)
-                obs_output_release(ignore_output);
-        } else {
-            obs_output_output_caption_text2(output, txt, 0.0);
-        }
+                }
+                return true;
+            },
+            (void *) &param
+        );
+        if (ignore_output != nullptr)
+            obs_output_release(ignore_output);
     }
 
     if (output) {
@@ -149,4 +135,4 @@ static void caption_output_writer_loop(shared_ptr<CaptionOutputControl<int>> con
 }
 
 
-#endif //OBS_GOOGLE_CAPTION_PLUGIN_CAPTION_OUTPUT_WRITER_H
+#endif // AI_CAPTION_PLUGIN_CAPTION_OUTPUT_WRITER_H

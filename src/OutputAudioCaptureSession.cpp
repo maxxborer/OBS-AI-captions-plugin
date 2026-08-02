@@ -16,7 +16,6 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 ******************************************************************************/
 
 #include <utility>
-#include <util/platform.h>
 
 #include "OutputAudioCaptureSession.h"
 #include "log.c"
@@ -34,11 +33,11 @@ OutputAudioCaptureSession::OutputAudioCaptureSession(
         resample_info resample_to,
         int id
 ) :
-        on_caption_cb_handle(audio_data_cb),
-        on_status_cb_handle(status_change_cb),
+        id(id),
         bytes_per_channel(get_audio_bytes_per_channel(resample_to.format)),
         track_index(track_index),
-        id(id) {
+        on_caption_cb_handle(std::move(audio_data_cb)),
+        on_status_cb_handle(std::move(status_change_cb)) {
     debug_log("OutputAudioCaptureSession()");
 
     obs_audio_info backend_audio_settings;
@@ -65,9 +64,6 @@ OutputAudioCaptureSession::OutputAudioCaptureSession(
 }
 
 void OutputAudioCaptureSession::audio_capture_cb(size_t mix_idx, const struct audio_data *audio) {
-    if (!on_caption_cb_handle.callback_fn)
-        return;
-
     if (!audio || !audio->frames)
         return;
 

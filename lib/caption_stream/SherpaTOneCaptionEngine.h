@@ -14,7 +14,6 @@ of the License, or (at your option) any later version.
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
-#include <deque>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -38,7 +37,9 @@ public:
 
 private:
     void worker_loop();
-    void decode_audio(const std::vector<std::int16_t> &audio);
+    void decode_audio(
+            const std::vector<std::int16_t> &audio,
+            std::vector<float> &samples);
     void publish_current_result(bool final);
     void reset_utterance();
 
@@ -51,8 +52,9 @@ private:
 
     std::mutex queue_mutex;
     std::condition_variable queue_cv;
-    std::deque<std::vector<std::int16_t>> pending_audio;
-    std::size_t pending_samples = 0;
+    std::vector<std::int16_t> audio_ring;
+    std::size_t audio_ring_head = 0;
+    std::size_t audio_ring_size = 0;
     std::atomic_bool stopping = false;
     std::thread worker;
 

@@ -24,7 +24,8 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include <obs.hpp>
 #include <functional>
 #include <mutex>
-#include <lib/caption_stream/ThreadsaferCallback.h>
+#include <vector>
+#include <ThreadSafeCallback.h>
 #include "data.h"
 
 class SourceAudioCaptureSession {
@@ -37,9 +38,10 @@ class SourceAudioCaptureSession {
     bool use_muting_cb_signal = true;
     const int id;
     const int bytes_per_channel;
+    std::vector<uint8_t> muted_audio_buffer;
 public:
-    ThreadsaferCallback<audio_chunk_data_cb> on_caption_cb_handle;
-    ThreadsaferCallback<audio_capture_status_change_cb> on_status_cb_handle;
+    ThreadSafeCallback<audio_chunk_data_cb> on_caption_cb_handle;
+    ThreadSafeCallback<audio_capture_status_change_cb> on_status_cb_handle;
 
     SourceAudioCaptureSession(
             obs_source_t *audio_source,

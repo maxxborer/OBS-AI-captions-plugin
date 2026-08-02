@@ -5,745 +5,444 @@ This program is free software; you can redistribute it and/or
 modify it under the terms of the GNU General Public License
 as published by the Free Software Foundation; either version 2
 of the License, or (at your option) any later version.
+*******************************************************************************/
 
-This program is distributed in the hope that it will be useful,
-but WITHOUT ANY WARRANTY; without even the implied warranty of
-MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-GNU General Public License for more details.
+#include "SourceCaptioner.h"
 
-You should have received a copy of the GNU General Public License
-along with this program.  If not, see <http://www.gnu.org/licenses/>.
-******************************************************************************/
-
-#include <memory>
-
+#include <SherpaTOneCaptionEngine.h>
 #include <obs-module.h>
 #include <util/util.hpp>
 
-
-#include "SourceCaptioner.h"
-#include "CaptionEngineFactory.h"
-#include "log.c"
+#include "caption_file_writer.h"
 #include "caption_output_writer.h"
-#include "caption_transcript_writer.h"
+#include "log.c"
 
-typedef std::tuple<string, string> TextOutputTup;
+#include <exception>
 
-void set_text_source_text(const string &text_source_name, const string &caption_text) {
-    obs_source_t *text_source = obs_get_source_by_name(text_source_name.c_str());
-    if (!text_source) {
-//        warn_log("text source: %s not found, can't set caption text", text_source_name.c_str());
-        return;
-    }
-//    debug_log("set_text_source_text '%s': '%s'", text_source_name.c_str(), caption_text.c_str());
-
-    obs_data_t *text_settings = obs_data_create();
-    obs_data_set_string(text_settings, "text", caption_text.c_str());
-    obs_source_update(text_source, text_settings);
-    obs_data_release(text_settings);
-
-    obs_source_release(text_source);
+namespace {
+constexpr std::size_t kHistoryEntriesLowWatermark = 40;
+constexpr std::size_t kHistoryEntriesHighWatermark = 80;
 }
 
-SourceCaptioner::SourceCaptioner(const bool enabled, const SourceCaptionerSettings &settings, const string &scene_collection_name, bool start) :
-        QObject(),
-        base_enabled(enabled),
-        settings(settings),
-        selected_scene_collection_name(scene_collection_name),
-        last_caption_at(std::chrono::steady_clock::now()),
-        last_caption_cleared(true) {
-
+SourceCaptioner::SourceCaptioner(
+        const SourceCaptionerSettings &settings,
+        bool start)
+        : QObject(),
+          settings(settings),
+          last_caption_at(std::chrono::steady_clock::now()),
+          last_caption_cleared(true) {
     QObject::connect(&timer, &QTimer::timeout, this, &SourceCaptioner::clear_output_timer_cb);
-
-    QObject::connect(this, &SourceCaptioner::received_caption_result,
-                     this, &SourceCaptioner::process_caption_result, Qt::QueuedConnection);
-
-    QObject::connect(this, &SourceCaptioner::audio_capture_status_changed,
-                     this, &SourceCaptioner::process_audio_capture_status_change);
-
-    timer.start(1000);
-
-    const SceneCollectionSettings &scene_col_settings = this->settings.get_scene_collection_settings(scene_collection_name);
-    debug_log("SourceCaptioner, source '%s'", scene_col_settings.caption_source_settings.caption_source_name.c_str());
+    QObject::connect(
+            this,
+            &SourceCaptioner::received_caption_result,
+            this,
+            &SourceCaptioner::process_caption_result,
+            Qt::QueuedConnection);
+    QObject::connect(
+            this,
+            &SourceCaptioner::audio_capture_status_changed,
+            this,
+            &SourceCaptioner::process_audio_capture_status_change);
 
     if (start)
-        start_caption_stream(settings, scene_collection_name);
+        start_caption_stream(settings);
 }
 
-
 void SourceCaptioner::stop_caption_stream(bool send_signal) {
-    if (!send_signal) {
+    timer.stop();
+    std::unique_ptr<SourceAudioCaptureSession> source_session_to_stop;
+    std::unique_ptr<OutputAudioCaptureSession> output_session_to_stop;
+    std::unique_ptr<CaptionEngine> engine_to_stop;
+    SourceCaptionerSettings current_settings = settings;
+    {
         std::lock_guard<recursive_mutex> lock(settings_change_mutex);
-        source_audio_capture_session = nullptr;
-        output_audio_capture_session = nullptr;
-        caption_result_handler = nullptr;
-        caption_engine = nullptr;
-        audio_capture_id++;
-        return;
+        current_settings = settings;
+        source_session_to_stop = std::move(source_audio_capture_session);
+        output_session_to_stop = std::move(output_audio_capture_session);
+        engine_to_stop = std::move(caption_engine);
+        caption_result_handler.reset();
+        reset_caption_state_unlocked();
+        ++audio_capture_id;
     }
-
-    settings_change_mutex.lock();
-
-    SourceCaptionerSettings cur_settings = settings;
-    string cur_scene_collection_name = this->selected_scene_collection_name;
-
-    source_audio_capture_session = nullptr;
-    output_audio_capture_session = nullptr;
-    caption_result_handler = nullptr;
-    caption_engine = nullptr;
-    audio_capture_id++;
-
-    settings_change_mutex.unlock();
+    source_session_to_stop.reset();
+    output_session_to_stop.reset();
+    engine_to_stop.reset();
+    file_output.clear();
 
     if (send_signal) {
         emit source_capture_status_changed(std::make_shared<SourceCaptionerStatus>(
                 SOURCE_CAPTIONER_STATUS_EVENT_STOPPED,
-                false,
-                false,
-                cur_settings,
-                cur_scene_collection_name,
-                AUDIO_SOURCE_NOT_STREAMED,
-                false
-        ));
+                current_settings,
+                AUDIO_SOURCE_NOT_STREAMED));
     }
 }
 
-bool SourceCaptioner::set_settings(const SourceCaptionerSettings &new_settings, const string &scene_collection_name) {
-//    debug_log("SourceCaptioner::set_settings");
-
-    bool settings_equal;
-    bool stream_settings_equal;
+bool SourceCaptioner::set_settings(const SourceCaptionerSettings &new_settings) {
+    timer.stop();
+    std::unique_ptr<SourceAudioCaptureSession> source_session_to_stop;
+    std::unique_ptr<OutputAudioCaptureSession> output_session_to_stop;
+    std::unique_ptr<CaptionEngine> engine_to_stop;
     {
         std::lock_guard<recursive_mutex> lock(settings_change_mutex);
-        stop_caption_stream(false);
-
-        settings_equal = settings == new_settings;
-        stream_settings_equal = settings.stream_settings == new_settings.stream_settings;
-
         settings = new_settings;
-        selected_scene_collection_name = scene_collection_name;
-
-        fileoutput_captions_output.clear();
+        source_session_to_stop = std::move(source_audio_capture_session);
+        output_session_to_stop = std::move(output_audio_capture_session);
+        engine_to_stop = std::move(caption_engine);
+        caption_result_handler.reset();
+        reset_caption_state_unlocked();
+        ++audio_capture_id;
     }
+    source_session_to_stop.reset();
+    output_session_to_stop.reset();
+    engine_to_stop.reset();
+    file_output.clear();
 
     emit source_capture_status_changed(std::make_shared<SourceCaptionerStatus>(
             SOURCE_CAPTIONER_STATUS_EVENT_NEW_SETTINGS_STOPPED,
-            !settings_equal,
-            !stream_settings_equal,
             new_settings,
-            scene_collection_name,
-            AUDIO_SOURCE_NOT_STREAMED,
-            false
-    ));
-
+            AUDIO_SOURCE_NOT_STREAMED));
     return true;
 }
 
-bool SourceCaptioner::start_caption_stream(const SourceCaptionerSettings &new_settings, const string &scene_collection_name) {
-//    debug_log("start_caption_stream %d", (int) std::hash<std::thread::id>{}(std::this_thread::get_id()));
-    bool started_ok;
-    bool settings_equal;
-    bool stream_settings_equal;
-    audio_source_capture_status audio_cap_status = AUDIO_SOURCE_NOT_STREAMED;
+bool SourceCaptioner::start_caption_stream(const SourceCaptionerSettings &new_settings) {
+    timer.stop();
+    bool started_ok = false;
+    audio_source_capture_status audio_capture_status = AUDIO_SOURCE_NOT_STREAMED;
+    const bool source_changed =
+            settings.caption_source_settings != new_settings.caption_source_settings;
+    std::unique_ptr<SourceAudioCaptureSession> source_session_to_stop;
+    std::unique_ptr<OutputAudioCaptureSession> output_session_to_stop;
+    std::unique_ptr<CaptionEngine> engine_to_stop;
 
     {
         std::lock_guard<recursive_mutex> lock(settings_change_mutex);
-        settings_equal = settings == new_settings;
-        stream_settings_equal = settings.stream_settings == new_settings.stream_settings;
-
         settings = new_settings;
-        selected_scene_collection_name = scene_collection_name;
+        source_session_to_stop = std::move(source_audio_capture_session);
+        output_session_to_stop = std::move(output_audio_capture_session);
+        caption_result_handler.reset();
+        reset_caption_state_unlocked();
+        ++audio_capture_id;
 
-        source_audio_capture_session = nullptr;
-        output_audio_capture_session = nullptr;
-        caption_result_handler = nullptr;
-        audio_capture_id++;
+        if (source_changed)
+            engine_to_stop = std::move(caption_engine);
+    }
+    source_session_to_stop.reset();
+    output_session_to_stop.reset();
+    engine_to_stop.reset();
+    file_output.clear();
 
-        started_ok = _start_caption_stream(!stream_settings_equal);
-
-        if (!started_ok)
-            stop_caption_stream(false);
-
+    std::unique_ptr<SourceAudioCaptureSession> failed_source_session;
+    std::unique_ptr<OutputAudioCaptureSession> failed_output_session;
+    std::unique_ptr<CaptionEngine> failed_engine;
+    {
+        std::lock_guard<recursive_mutex> lock(settings_change_mutex);
+        started_ok = _start_caption_stream();
         if (started_ok) {
             if (source_audio_capture_session)
-                audio_cap_status = source_audio_capture_session->get_current_capture_status();
+                audio_capture_status = source_audio_capture_session->get_current_capture_status();
             else if (output_audio_capture_session)
-                audio_cap_status = AUDIO_SOURCE_CAPTURING;
-            else {
-                stop_caption_stream(false);
+                audio_capture_status = AUDIO_SOURCE_CAPTURING;
+            else
                 started_ok = false;
-            }
-            if (started_ok) {
-                if (new_settings.file_output_settings.isValidEnabled()) {
-                    fileoutput_captions_output.clear();
+        }
 
-                    FileOutputSettings fsets = new_settings.file_output_settings;
-                    auto control = std::make_shared<CaptionOutputControl<FileOutputSettings>>(fsets);
-                    fileoutput_captions_output.set_control(control);
-                    std::thread th(fileoutput_writer_loop, control, fsets);
-                    th.detach();
-                }
-            }
+        if (!started_ok) {
+            failed_source_session = std::move(source_audio_capture_session);
+            failed_output_session = std::move(output_audio_capture_session);
+            failed_engine = std::move(caption_engine);
+            caption_result_handler.reset();
+            reset_caption_state_unlocked();
+            ++audio_capture_id;
         }
     }
+    failed_source_session.reset();
+    failed_output_session.reset();
+    failed_engine.reset();
 
-    if (started_ok) {
-//        info_log("start_caption_stream OK, %d ", audio_cap_status);
-        emit source_capture_status_changed(std::make_shared<SourceCaptionerStatus>(
-                SOURCE_CAPTIONER_STATUS_EVENT_STARTED_OK,
-                !settings_equal,
-                !stream_settings_equal,
-                new_settings,
-                scene_collection_name,
-                audio_cap_status,
-                true
-        ));
-    } else {
-//        info_log("start_caption_stream FAIL");
-        emit source_capture_status_changed(std::make_shared<SourceCaptionerStatus>(
-                SOURCE_CAPTIONER_STATUS_EVENT_STARTED_ERROR,
-                !settings_equal,
-                !stream_settings_equal,
-                new_settings,
-                scene_collection_name,
-                AUDIO_SOURCE_NOT_STREAMED,
-                false
-        ));
+    if (started_ok && new_settings.file_output_settings.isValidEnabled()) {
+        const FileOutputSettings file_settings = new_settings.file_output_settings;
+        auto control = std::make_shared<CaptionOutputControl<FileOutputSettings>>(file_settings);
+        file_output.start(control, file_output_writer_loop);
     }
 
+    if (started_ok)
+        timer.start(1000);
+
+    emit source_capture_status_changed(std::make_shared<SourceCaptionerStatus>(
+            started_ok ? SOURCE_CAPTIONER_STATUS_EVENT_STARTED_OK
+                       : SOURCE_CAPTIONER_STATUS_EVENT_STARTED_ERROR,
+            new_settings,
+            audio_capture_status));
     return started_ok;
 }
 
-bool SourceCaptioner::_start_caption_stream(bool restart_stream) {
-//    debug_log("start_caption_stream");
-
-    {
-        const SceneCollectionSettings &scene_col_settings = this->settings.get_scene_collection_settings(selected_scene_collection_name);
-        const CaptionSourceSettings &selected_caption_source_settings = scene_col_settings.caption_source_settings;
-
-        debug_log("SourceCaptioner start_caption_stream, source '%s'", selected_caption_source_settings.caption_source_name.c_str());
-
-        if (selected_caption_source_settings.caption_source_name.empty()) {
-            warn_log("SourceCaptioner start_caption_stream, empty source given.");
-            return false;
-        }
-
-        const bool use_output_audio = is_all_audio_output_capture_source_data(selected_caption_source_settings.caption_source_name);
-
-        OBSSource caption_source;
-        OBSSource mute_source;
-
-        if (!use_output_audio) {
-            caption_source = obs_get_source_by_name(selected_caption_source_settings.caption_source_name.c_str());
-            obs_source_release(caption_source);
-            if (!caption_source) {
-                warn_log("SourceCaptioner start_caption_stream, no caption source with name: '%s'",
-                         selected_caption_source_settings.caption_source_name.c_str());
-                return false;
-            }
-
-            if (selected_caption_source_settings.mute_when == CAPTION_SOURCE_MUTE_TYPE_USE_OTHER_MUTE_SOURCE) {
-                mute_source = obs_get_source_by_name(selected_caption_source_settings.mute_source_name.c_str());
-                obs_source_release(mute_source);
-
-                if (!mute_source) {
-                    warn_log("SourceCaptioner start_caption_stream, no mute source with name: '%s'",
-                             selected_caption_source_settings.mute_source_name.c_str());
-                    return false;
-                }
-            }
-        }
-
-        debug_log("caption engine running: %d, restart requested: %d", caption_engine != nullptr, restart_stream);
-        if (!caption_engine || restart_stream) {
-            try {
-
-                ContinuousCaptionStreamSettings settings_copy = settings.stream_settings;
-
-#if ENABLE_CUSTOM_API_KEY
-                debug_log("using ENABLE_CUSTOM_API_KEY %lu", settings_copy.stream_settings.api_key.length());
-#else
-#ifdef GOOGLE_API_KEY_STR
-                settings_copy.stream_settings.api_key = GOOGLE_API_KEY_STR;
-                debug_log("using GOOGLE_API_KEY_STR %lu", settings_copy.stream_settings.api_key.length());
-#endif
-#endif
-
-                LocalCaptionEngineSettings local_settings;
-                BPtr<char> local_model_directory = obs_module_file(
-                        "models/sherpa-onnx-streaming-t-one-russian-2025-09-08");
-                if (local_model_directory)
-                    local_settings.model_directory = local_model_directory.Get();
-
-                CaptionEngineCreationResult engine_result = CaptionEngineFactory::create(
-                        settings.caption_engine_type,
-                        settings_copy,
-                        local_settings);
-                if (!engine_result.succeeded()) {
-                    warn_log("couldn't create caption engine (%d): %s",
-                             static_cast<int>(engine_result.status),
-                             engine_result.message.c_str());
-                    return false;
-                }
-
-                auto caption_cb = std::bind(&SourceCaptioner::on_caption_text_callback, this, std::placeholders::_1, std::placeholders::_2);
-                caption_engine = std::move(engine_result.engine);
-                caption_engine->on_caption_cb_handle.set(caption_cb, true);
-            }
-            catch (...) {
-                warn_log("couldn't initialize caption engine callback");
-                return false;
-            }
-        }
-        caption_result_handler = std::make_unique<CaptionResultHandler>(settings.format_settings);
-
-        try {
-            resample_info resample_to = {caption_engine->preferred_sample_rate(), AUDIO_FORMAT_16BIT, SPEAKERS_MONO};
-            audio_chunk_data_cb audio_cb = std::bind(&SourceCaptioner::on_audio_data_callback, this,
-                                                     std::placeholders::_1, std::placeholders::_2, std::placeholders::_3);
-
-            auto audio_status_cb = std::bind(&SourceCaptioner::on_audio_capture_status_change_callback, this,
-                                             std::placeholders::_1, std::placeholders::_2);
-
-            if (use_output_audio) {
-                int track_index = all_audio_output_capture_source_track_index(selected_caption_source_settings.caption_source_name);
-                if (track_index < 0)
-                    track_index = 0;
-
-                output_audio_capture_session = std::make_unique<OutputAudioCaptureSession>(track_index,
-                                                                                           audio_cb, audio_status_cb,
-                                                                                           resample_to,
-                                                                                           audio_capture_id);
-            } else {
-                source_audio_capture_session = std::make_unique<SourceAudioCaptureSession>(caption_source, mute_source, audio_cb,
-                                                                                           audio_status_cb,
-                                                                                           resample_to,
-                                                                                           MUTED_SOURCE_REPLACE_WITH_ZERO,
-                                                                                           false,
-                                                                                           audio_capture_id);
-            }
-
-
-        }
-        catch (std::string err) {
-            warn_log("couldn't create AudioCaptureSession, %s", err.c_str());
-            return false;
-        }
-        catch (...) {
-            warn_log("couldn't create AudioCaptureSession");
-            return false;
-        }
-
+bool SourceCaptioner::_start_caption_stream() {
+    const CaptionSourceSettings &source_settings = settings.caption_source_settings;
+    if (source_settings.caption_source_name.empty()) {
+        warn_log("SourceCaptioner: no audio source selected");
+        return false;
     }
-//    debug_log("started captioning source '%s'", selected_caption_source_settings.caption_source_name.c_str());
-//    debug_log("started captioning source tid '%d'", std::hash<std::thread::id>{}(std::this_thread::get_id()));
+
+    const bool use_output_audio =
+            is_all_audio_output_capture_source_data(source_settings.caption_source_name);
+    OBSSource caption_source;
+    OBSSource mute_source;
+
+    if (!use_output_audio) {
+        caption_source = obs_get_source_by_name(source_settings.caption_source_name.c_str());
+        obs_source_release(caption_source);
+        if (!caption_source) {
+            warn_log("SourceCaptioner: audio source '%s' was not found", source_settings.caption_source_name.c_str());
+            return false;
+        }
+
+        if (source_settings.mute_when == CAPTION_SOURCE_MUTE_TYPE_USE_OTHER_MUTE_SOURCE) {
+            mute_source = obs_get_source_by_name(source_settings.mute_source_name.c_str());
+            obs_source_release(mute_source);
+            if (!mute_source) {
+                warn_log("SourceCaptioner: mute source '%s' was not found", source_settings.mute_source_name.c_str());
+                return false;
+            }
+        }
+    }
+
+    if (!caption_engine) {
+        try {
+            LocalCaptionEngineSettings local_settings;
+            BPtr<char> model_directory = obs_module_file(
+                    "models/sherpa-onnx-streaming-t-one-russian-2025-09-08");
+            if (model_directory)
+                local_settings.model_directory = model_directory.Get();
+
+            caption_engine = std::make_unique<SherpaTOneCaptionEngine>(local_settings);
+        } catch (const std::exception &error) {
+            warn_log("SourceCaptioner: local model initialization failed: %s", error.what());
+            return false;
+        } catch (...) {
+            warn_log("SourceCaptioner: local model initialization failed");
+            return false;
+        }
+    }
+
+    const int callback_id = audio_capture_id;
+    caption_engine->on_caption_cb_handle.set(
+            [this, callback_id](const CaptionResult &result, bool interrupted) {
+                on_caption_text_callback(callback_id, result, interrupted);
+            });
+
+    caption_result_handler = std::make_unique<CaptionResultHandler>(settings.format_settings);
+
+    try {
+        resample_info resample_to = {
+                caption_engine->preferred_sample_rate(),
+                AUDIO_FORMAT_16BIT,
+                SPEAKERS_MONO};
+        audio_chunk_data_cb audio_callback =
+                [this](int id, const uint8_t *data, size_t size) {
+                    on_audio_data_callback(id, data, size);
+                };
+        audio_capture_status_change_cb status_callback =
+                [this](int id, audio_source_capture_status status) {
+                    on_audio_capture_status_change_callback(id, status);
+                };
+
+        if (use_output_audio) {
+            const int track_index =
+                    all_audio_output_capture_source_track_index(source_settings.caption_source_name);
+            if (track_index < 0)
+                return false;
+            output_audio_capture_session = std::make_unique<OutputAudioCaptureSession>(
+                    track_index,
+                    audio_callback,
+                    status_callback,
+                    resample_to,
+                    audio_capture_id);
+        } else {
+            const source_capture_config mute_behavior =
+                    source_settings.mute_when == CAPTION_SOURCE_MUTE_TYPE_ALWAYS_CAPTION
+                            ? MUTED_SOURCE_STILL_CAPTURE
+                            : MUTED_SOURCE_REPLACE_WITH_ZERO;
+            source_audio_capture_session = std::make_unique<SourceAudioCaptureSession>(
+                    caption_source,
+                    mute_source,
+                    audio_callback,
+                    status_callback,
+                    resample_to,
+                    mute_behavior,
+                    false,
+                    audio_capture_id);
+        }
+    } catch (const std::string &error) {
+        warn_log("SourceCaptioner: audio capture failed: %s", error.c_str());
+        return false;
+    } catch (...) {
+        warn_log("SourceCaptioner: audio capture failed");
+        return false;
+    }
+
     return true;
 }
 
-void SourceCaptioner::on_audio_capture_status_change_callback(const int id, const audio_source_capture_status status) {
-//    debug_log("capture status change %d %d", status, (int) std::hash<std::thread::id>{}(std::this_thread::get_id()));
+void SourceCaptioner::on_audio_capture_status_change_callback(
+        int id,
+        audio_source_capture_status status) {
     emit audio_capture_status_changed(id, status);
 }
 
-
-void SourceCaptioner::process_audio_capture_status_change(const int cb_audio_capture_id, const int new_status) {
-//    debug_log("process_audio_capture_status_change %d %d", new_status, (int) std::hash<std::thread::id>{}(std::this_thread::get_id()));
-
-    settings_change_mutex.lock();
-
-    bool is_old_audio_session = cb_audio_capture_id != audio_capture_id;
-    SourceCaptionerSettings cur_settings = settings;
-    string cur_scene_collection_name = selected_scene_collection_name;
-    bool active = caption_engine != nullptr;
-
-    settings_change_mutex.unlock();
-
-    if (is_old_audio_session) {
-        debug_log("ignoring old audio capture status!!");
+void SourceCaptioner::process_audio_capture_status_change(int callback_id, int new_status) {
+    std::unique_lock<recursive_mutex> lock(settings_change_mutex);
+    if (callback_id != audio_capture_id)
         return;
-    }
+    SourceCaptionerSettings current_settings = settings;
+    lock.unlock();
 
     emit source_capture_status_changed(std::make_shared<SourceCaptionerStatus>(
             SOURCE_CAPTIONER_STATUS_EVENT_AUDIO_CAPTURE_STATUS_CHANGE,
-            false,
-            false,
-            cur_settings,
-            cur_scene_collection_name,
-            (audio_source_capture_status) new_status,
-            active
-    ));
+            current_settings,
+            static_cast<audio_source_capture_status>(new_status)));
 }
 
+void SourceCaptioner::on_audio_data_callback(int callback_id, const uint8_t *data, size_t size) {
+    std::lock_guard<recursive_mutex> lock(settings_change_mutex);
+    if (callback_id == audio_capture_id && caption_engine)
+        caption_engine->queue_audio_data(reinterpret_cast<const char *>(data), static_cast<unsigned int>(size));
+}
 
-void SourceCaptioner::on_audio_data_callback(const int id, const uint8_t *data, const size_t size) {
-//    info_log("audio data");
-    if (caption_engine) {
-        // Safe without locking: the engine only changes while no audio capture session is running.
-        caption_engine->queue_audio_data((char *) data, static_cast<unsigned int>(size));
-    }
-    audio_chunk_count++;
-
+void SourceCaptioner::reset_caption_state_unlocked() {
+    results_history.clear();
+    last_caption_text.clear();
+    last_caption_final = false;
+    last_caption_at = std::chrono::steady_clock::now();
+    last_caption_cleared = true;
 }
 
 void SourceCaptioner::clear_output_timer_cb() {
-//    info_log("clear timer checkkkkkkkkkkkkkkk");
-
-    bool to_stream, to_recording, to_transcript_streaming, to_transcript_recording;
-    vector<string> text_source_names;
-    bool clear_fileoutput = false;
+    bool clear_file = false;
+    bool clear_stream = false;
     {
         std::lock_guard<recursive_mutex> lock(settings_change_mutex);
-        if (!this->settings.format_settings.caption_timeout_enabled || this->last_caption_cleared)
+        if (!settings.format_settings.caption_timeout_enabled || last_caption_cleared)
             return;
 
-        double secs_since_last_caption = std::chrono::duration_cast<std::chrono::duration<double >>(
-                std::chrono::steady_clock::now() - this->last_caption_at).count();
-
-        if (secs_since_last_caption <= this->settings.format_settings.caption_timeout_seconds)
+        const double seconds_since_caption =
+                std::chrono::duration_cast<std::chrono::duration<double>>(
+                        std::chrono::steady_clock::now() - last_caption_at)
+                        .count();
+        if (seconds_since_caption <= settings.format_settings.caption_timeout_seconds)
             return;
 
-        info_log("last caption line was sent %f secs ago, > %f, clearing",
-                 secs_since_last_caption, this->settings.format_settings.caption_timeout_seconds);
-
-        this->last_caption_cleared = true;
-        to_stream = settings.streaming_output_enabled;
-        to_recording = settings.recording_output_enabled;
-        to_transcript_streaming = settings.transcript_settings.enabled && settings.transcript_settings.streaming_transcripts_enabled;
-        to_transcript_recording = settings.transcript_settings.enabled && settings.transcript_settings.recording_transcripts_enabled;
-
-        const SceneCollectionSettings &scene_col_settings = this->settings.get_scene_collection_settings(selected_scene_collection_name);
-        for (const auto &text_out: scene_col_settings.text_outputs) {
-            if (!text_out.isValidEnabled())
-                continue;
-            text_source_names.push_back(text_out.text_source_name);
-        }
-
-        if (fileoutput_captions_output.control) {
-            clear_fileoutput = true;
-        }
+        last_caption_cleared = true;
+        clear_stream = settings.native_stream_output_enabled;
+        clear_file = file_output.control != nullptr;
     }
 
-    auto now = std::chrono::steady_clock::now();
-    auto clearance = CaptionOutput(std::make_shared<OutputCaptionResult>(CaptionResult(0, false, 0, "", "", now, now), false), true);
-    output_caption_writers(clearance,
-                           to_stream,
-                           to_recording,
-                           false,
-                           false,
-                           false,
-                           true);
-
-    for (const auto &to_clear: text_source_names) {
-        set_text_source_text(to_clear, " ");
-    }
-
-    if (clear_fileoutput) {
-        fileoutput_captions_output.enqueue(clearance);
-    }
-
-    emit caption_result_received(nullptr, true, "");
+    const auto now = std::chrono::steady_clock::now();
+    CaptionOutput clearance(
+            std::make_shared<OutputCaptionResult>(
+                    CaptionResult(0, false, 0, "", "", now, now),
+                    false),
+            true);
+    if (clear_stream)
+        native_stream_output.enqueue(clearance);
+    if (clear_file)
+        file_output.enqueue(clearance);
+    emit caption_result_received(nullptr, true);
 }
-
 
 void SourceCaptioner::store_result(shared_ptr<OutputCaptionResult> output_result) {
     if (!output_result)
         return;
-
-    if (output_result->caption_result.final) {
+    if (output_result->caption_result.final)
         results_history.push_back(output_result);
-        held_nonfinal_caption_result = nullptr;
-        debug_log("final, adding to history: %d %s", (int) results_history.size(), output_result->clean_caption_text.c_str());
-    } else {
-        held_nonfinal_caption_result = output_result;
-    }
 
-    if (results_history.size() > HISTORY_ENTRIES_HIGH_WM) {
-        results_history.erase(results_history.begin(), results_history.begin() + HISTORY_ENTRIES_LOW_WM);
-//        debug_log("cleaning result history done %d", (int) results_history.size());
+    if (results_history.size() > kHistoryEntriesHighWatermark) {
+        for (std::size_t index = 0; index < kHistoryEntriesLowWatermark; ++index)
+            results_history.pop_front();
     }
 }
 
-
-void SourceCaptioner::prepare_recent(string &recent_captions_output) {
-    for (auto i = results_history.rbegin(); i != results_history.rend(); ++i) {
-        if (!(*i))
-            break;
-
-        if (!(*i)->caption_result.final)
-            break;
-
-        if (recent_captions_output.size() + (*i)->clean_caption_text.size() >= MAX_HISTORY_VIEW_LENGTH)
-            break;
-
-        if ((*i)->clean_caption_text.empty())
-            continue;
-
-        if (recent_captions_output.empty()) {
-            recent_captions_output.insert(0, 1, '.');
-        } else {
-            recent_captions_output.insert(0, ". ");
-        }
-
-        recent_captions_output.insert(0, (*i)->clean_caption_text);
-    }
-
-    if (held_nonfinal_caption_result) {
-        if (!recent_captions_output.empty())
-            recent_captions_output.push_back(' ');
-        recent_captions_output.append("    >> ");
-        recent_captions_output.append(held_nonfinal_caption_result->clean_caption_text);
-    }
+void SourceCaptioner::on_caption_text_callback(
+        int id,
+        const CaptionResult &caption_result,
+        bool interrupted) {
+    emit received_caption_result(id, caption_result, interrupted);
 }
 
-void SourceCaptioner::on_caption_text_callback(const CaptionResult &caption_result, bool interrupted) {
-    // emit qt signal to avoid possible thread deadlock
-    // this callback comes from the captioner thread, result processing needs settings_change_mutex, so does clearing captioner,
-    // but that waits for the captioner callback to finish which might be waiting on the lock otherwise.
-
-    emit received_caption_result(caption_result, interrupted);
-}
-
-void SourceCaptioner::process_caption_result(const CaptionResult caption_result, bool interrupted) {
-    shared_ptr<OutputCaptionResult> native_output_result;
-    shared_ptr<OutputCaptionResult> file_output_result(nullptr);
-    string recent_caption_text;
-    bool to_stream, to_recording, to_transcript_streaming, to_transcript_recording, to_transcript_virtualcam;
-
-    if (this->last_caption_text == caption_result.caption_text && this->last_caption_final == caption_result.final) {
-        return;
-    }
-    this->last_caption_text = caption_result.caption_text;
-    this->last_caption_final = caption_result.final;
-
-    vector<TextOutputTup> text_source_sets;
+void SourceCaptioner::process_caption_result(
+        int callback_id,
+        const CaptionResult caption_result,
+        bool interrupted) {
     {
         std::lock_guard<recursive_mutex> lock(settings_change_mutex);
-
-        if (!caption_result_handler) {
-            warn_log("no caption_result_handler, shouldn't happen, there should be no AudioCaptureSession running");
+        if (callback_id != audio_capture_id)
             return;
-        }
+    }
 
-        native_output_result = caption_result_handler->prepare_caption_output(caption_result,
-                                                                              true,
-                                                                              settings.format_settings.caption_insert_newlines,
-                                                                              settings.format_settings.caption_insert_punctuation,
-                                                                              settings.format_settings.caption_line_length,
-                                                                              settings.format_settings.caption_line_count,
-                                                                              settings.format_settings.capitalization,
-                                                                              interrupted,
-                                                                              results_history);
-        if (!native_output_result)
+    if (last_caption_text == caption_result.caption_text && last_caption_final == caption_result.final)
+        return;
+    last_caption_text = caption_result.caption_text;
+    last_caption_final = caption_result.final;
+
+    shared_ptr<OutputCaptionResult> output_result;
+    shared_ptr<OutputCaptionResult> file_output_result;
+    bool send_to_stream = false;
+    {
+        std::lock_guard<recursive_mutex> lock(settings_change_mutex);
+        if (!caption_result_handler)
             return;
 
-        const SceneCollectionSettings &scene_col_settings = this->settings.get_scene_collection_settings(selected_scene_collection_name);
-        for (const auto &text_out: scene_col_settings.text_outputs) {
-            if (!text_out.isValidEnabled())
-                continue;
-
-            auto text_output_result = caption_result_handler->prepare_caption_output(caption_result,
-                                                                                     true,
-                                                                                     true,
-                                                                                     text_out.insert_punctuation,
-                                                                                     text_out.line_length,
-                                                                                     text_out.line_count,
-                                                                                     text_out.capitalization,
-                                                                                     interrupted,
-                                                                                     results_history);
-
-            text_source_sets.emplace_back(text_out.text_source_name, text_output_result->output_line);
-        }
-
-        store_result(native_output_result);
-
-//        info_log("got caption '%s'", native_output_result->clean_caption_text.c_str());
-//        info_log("output line '%s'", output_caption_line.c_str());
-
-        prepare_recent(recent_caption_text);
-
-        to_stream = settings.streaming_output_enabled;
-        to_recording = settings.recording_output_enabled;
-        to_transcript_streaming = settings.transcript_settings.enabled && settings.transcript_settings.streaming_transcripts_enabled;
-        to_transcript_recording = settings.transcript_settings.enabled && settings.transcript_settings.recording_transcripts_enabled;
-        to_transcript_virtualcam = settings.transcript_settings.enabled && settings.transcript_settings.virtualcam_transcripts_enabled;
-
-        if (settings.file_output_settings.isValidEnabled() && fileoutput_captions_output.control) {
-            file_output_result = caption_result_handler->prepare_caption_output(
+        output_result = caption_result_handler->prepare_caption_output(
                 caption_result,
                 true,
-                true,
-                settings.file_output_settings.insert_punctuation,
-                settings.file_output_settings.line_length,
-                settings.file_output_settings.line_count,
-                settings.file_output_settings.capitalization,
+                settings.format_settings.caption_insert_newlines,
+                settings.format_settings.caption_insert_punctuation,
+                settings.format_settings.caption_line_length,
+                settings.format_settings.caption_line_count,
                 interrupted,
                 results_history);
+        if (!output_result)
+            return;
+
+        send_to_stream = settings.native_stream_output_enabled;
+
+        if (settings.file_output_settings.isValidEnabled() && file_output.control) {
+            file_output_result = caption_result_handler->prepare_caption_output(
+                    caption_result,
+                    true,
+                    true,
+                    settings.file_output_settings.insert_punctuation,
+                    settings.file_output_settings.line_length,
+                    settings.file_output_settings.line_count,
+                    interrupted,
+                    results_history);
         }
+        store_result(output_result);
     }
 
-    this->output_caption_writers(CaptionOutput(native_output_result, false),
-                                 to_stream,
-                                 to_recording,
-                                 to_transcript_streaming,
-                                 to_transcript_recording,
-                                 to_transcript_virtualcam,
-                                 false);
-
+    if (send_to_stream)
+        native_stream_output.enqueue(CaptionOutput(output_result, false));
     if (file_output_result)
-        fileoutput_captions_output.enqueue(CaptionOutput(file_output_result, false));
+        file_output.enqueue(CaptionOutput(file_output_result, false));
 
-    for (const auto &text_out: text_source_sets) {
-        set_text_source_text(std::get<0>(text_out), std::get<1>(text_out));
-    }
-
-    emit caption_result_received(native_output_result, false, recent_caption_text);
-}
-
-void SourceCaptioner::output_caption_writers(
-        const CaptionOutput &output,
-        bool to_stream,
-        bool to_recoding,
-        bool to_transcript_streaming,
-        bool to_transcript_recording,
-        bool to_transcript_virtualcam,
-        bool is_clearance) {
-
-    bool sent_stream = false;
-    if (to_stream) {
-        sent_stream = streaming_output.enqueue(output);
-    }
-
-    bool sent_recording = false;
-    if (to_recoding) {
-        sent_recording = recording_output.enqueue(output);
-    }
-
-    bool sent_transcript_streaming = false;
-    if (to_transcript_streaming) {
-        sent_transcript_streaming = transcript_streaming_output.enqueue(output);
-    }
-
-    bool sent_transcript_recording = false;
-    if (to_transcript_recording) {
-        sent_transcript_recording = transcript_recording_output.enqueue(output);
-    }
-
-    bool sent_transcript_virtualcam = false;
-    if (to_transcript_virtualcam) {
-        sent_transcript_virtualcam = transcript_virtualcam_output.enqueue(output);
-    }
-
-//    debug_log("queuing caption line , stream: %d, recording: %d, '%s'",
-//              sent_stream, sent_recording, output.line.c_str());
-
-    if (!is_clearance)
-        caption_was_output();
+    caption_was_output();
+    emit caption_result_received(output_result, false);
 }
 
 void SourceCaptioner::caption_was_output() {
-    this->last_caption_at = std::chrono::steady_clock::now();
-    this->last_caption_cleared = false;
+    last_caption_at = std::chrono::steady_clock::now();
+    last_caption_cleared = false;
 }
 
-
 void SourceCaptioner::stream_started_event() {
-    settings_change_mutex.lock();
-    SourceCaptionerSettings cur_settings = settings;
-    settings_change_mutex.unlock();
-
-    auto control_output = std::make_shared<CaptionOutputControl<int>>(0);
-    streaming_output.set_control(control_output);
-    std::thread th(caption_output_writer_loop, control_output, true);
-    th.detach();
-
-    if (this->base_enabled && cur_settings.transcript_settings.enabled && cur_settings.transcript_settings.streaming_transcripts_enabled) {
-        auto control_transcript = std::make_shared<CaptionOutputControl<TranscriptOutputSettings>>(cur_settings.transcript_settings);
-        transcript_streaming_output.set_control(control_transcript);
-
-        std::thread th2(transcript_writer_loop, control_transcript, "stream", cur_settings.transcript_settings);
-        th2.detach();
-    }
+    auto control = std::make_shared<CaptionOutputControl<int>>(0);
+    native_stream_output.start(control, caption_output_writer_loop);
 }
 
 void SourceCaptioner::stream_stopped_event() {
-    streaming_output.clear();
-    transcript_streaming_output.clear();
+    native_stream_output.clear();
 }
-
-void SourceCaptioner::recording_started_event() {
-    settings_change_mutex.lock();
-    SourceCaptionerSettings cur_settings = settings;
-    settings_change_mutex.unlock();
-
-    auto control_output = std::make_shared<CaptionOutputControl<int>>(0);
-    recording_output.set_control(control_output);
-    std::thread th(caption_output_writer_loop, control_output, false);
-    th.detach();
-
-    if (this->base_enabled && cur_settings.transcript_settings.enabled && cur_settings.transcript_settings.recording_transcripts_enabled) {
-        auto control_transcript = std::make_shared<CaptionOutputControl<TranscriptOutputSettings>>(cur_settings.transcript_settings);
-        transcript_recording_output.set_control(control_transcript);
-
-        std::thread th2(transcript_writer_loop, control_transcript, "recording", cur_settings.transcript_settings);
-        th2.detach();
-    }
-}
-
-void SourceCaptioner::recording_stopped_event() {
-    recording_output.clear();
-    transcript_recording_output.clear();
-}
-
-void SourceCaptioner::virtualcam_started_event() {
-    settings_change_mutex.lock();
-    SourceCaptionerSettings cur_settings = settings;
-    settings_change_mutex.unlock();
-
-    if (this->base_enabled && cur_settings.transcript_settings.enabled && cur_settings.transcript_settings.virtualcam_transcripts_enabled) {
-        auto control_transcript = std::make_shared<CaptionOutputControl<TranscriptOutputSettings>>(cur_settings.transcript_settings);
-        transcript_virtualcam_output.set_control(control_transcript);
-
-        std::thread th2(transcript_writer_loop, control_transcript, "virtualcam", cur_settings.transcript_settings);
-        th2.detach();
-    }
-}
-
-void SourceCaptioner::virtualcam_stopped_event() {
-    transcript_virtualcam_output.clear();
-}
-
-void SourceCaptioner::set_text_source_text(const string &text_source_name, const string &caption_text) {
-    if (std::get<0>(last_text_source_set) == caption_text && std::get<1>(last_text_source_set) == text_source_name) {
-//        debug_log("ignore duplicate set_text_source_text");
-        return;
-    }
-
-    ::set_text_source_text(text_source_name, caption_text);
-    last_text_source_set = std::tuple<string, string>(caption_text, text_source_name);
-}
-
 
 SourceCaptioner::~SourceCaptioner() {
     stream_stopped_event();
-    recording_stopped_event();
     stop_caption_stream(false);
-}
-
-template<class T>
-void CaptionOutputControl<T>::stop_soon() {
-    debug_log("CaptionOutputControl stop_soon()");
-    stop = true;
-    caption_queue.enqueue(CaptionOutput());
-}
-
-template<class T>
-CaptionOutputControl<T>::~CaptionOutputControl() {
-    debug_log("~CaptionOutputControl");
-}
-
-bool TranscriptOutputSettings::hasBaseSettings() const {
-    if (!enabled || output_path.empty() || format.empty())
-        return false;
-
-    return true;
 }

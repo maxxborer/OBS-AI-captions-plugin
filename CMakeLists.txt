@@ -8,15 +8,6 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-option(ENABLE_FRONTEND_API "Use obs-frontend-api for UI functionality" ON)
-option(ENABLE_QT "Use Qt functionality" ON)
-option(ENABLE_CUSTOM_API_KEY "Allow the Google API key to be entered in the settings UI" OFF)
-set(GOOGLE_API_KEY "" CACHE STRING "Optional Google Speech API key compiled into the plugin")
-
-if(GOOGLE_API_KEY AND ENABLE_CUSTOM_API_KEY)
-  message(FATAL_ERROR "GOOGLE_API_KEY and ENABLE_CUSTOM_API_KEY cannot both be enabled")
-endif()
-
 include(compilerconfig)
 include(defaults)
 include(helpers)
@@ -39,22 +30,21 @@ target_sources(
     src/OutputAudioCaptureSession.cpp
     src/SourceCaptioner.cpp
     src/CaptionResultHandler.cpp
-    src/google_s2t_caption_plugin.cpp
+    src/ai_caption_plugin.cpp
     src/CaptionPluginManager.cpp
-    src/TikTokCaptionServer.cpp
-    src/ui/CaptionDock.cpp
-    src/ui/OpenCaptionSettingsWidget.cpp
+    src/BrowserCaptionServer.cpp
     src/ui/MainCaptionWidget.h
     src/ui/CaptionSettingsWidget.h
     src/SourceAudioCaptureSession.h
     src/OutputAudioCaptureSession.h
     src/SourceCaptioner.h
     src/CaptionResultHandler.h
+    src/caption_settings_storage.h
+    src/obs_frontend_state.h
+    src/caption_file_writer.h
     src/caption_output_writer.h
     src/CaptionPluginManager.h
-    src/TikTokCaptionServer.h
-    src/ui/CaptionDock.h
-    src/ui/OpenCaptionSettingsWidget.h
+    src/BrowserCaptionServer.h
     src/resources/obs.qrc
 )
 
@@ -63,12 +53,6 @@ target_compile_definitions(
   PRIVATE BUILD_CAPTIONS=1 VERSION_STRING="${PROJECT_VERSION}"
 )
 
-if(ENABLE_CUSTOM_API_KEY)
-  target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE ENABLE_CUSTOM_API_KEY=1)
-elseif(GOOGLE_API_KEY)
-  target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE GOOGLE_API_KEY_STR="${GOOGLE_API_KEY}")
-endif()
-
 target_link_libraries(
   ${CMAKE_PROJECT_NAME}
   PRIVATE caption_stream Qt6::Core Qt6::Network Qt6::Widgets OBS::libobs OBS::obs-frontend-api
@@ -76,7 +60,7 @@ target_link_libraries(
 
 set_target_properties(
   ${CMAKE_PROJECT_NAME}
-  PROPERTIES AUTOMOC ON AUTOUIC ON AUTORCC ON OUTPUT_NAME ai-caption-plugin
+  PROPERTIES AUTOMOC ON AUTORCC ON OUTPUT_NAME ai-caption-plugin
 )
 
 set_target_properties_plugin(${CMAKE_PROJECT_NAME})
@@ -94,10 +78,10 @@ include(CTest)
 if(BUILD_TESTING)
   if(WIN32)
     add_test(
-      NAME installer-compatibility
+      NAME installer-contract
       COMMAND
-        powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File
-        "${CMAKE_CURRENT_SOURCE_DIR}/tests/installer_compatibility_test.ps1"
+        pwsh.exe -NoLogo -NoProfile -File
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/installer_contract_test.ps1"
     )
   endif()
 
@@ -120,21 +104,37 @@ if(BUILD_TESTING)
   add_test(NAME english-term-replacements COMMAND english-term-replacements-test)
 
   add_executable(
-    tiktok-caption-server-test
-    tests/tiktok_caption_server_test.cpp
-    src/TikTokCaptionServer.cpp
-    src/TikTokCaptionServer.h
+    caption-result-handler-test
+    tests/caption_result_handler_test.cpp
+    src/CaptionResultHandler.cpp
+  )
+  target_include_directories(caption-result-handler-test PRIVATE src lib/caption_stream)
+  target_link_libraries(caption-result-handler-test PRIVATE Qt6::Core)
+  add_custom_command(
+    TARGET caption-result-handler-test
+    POST_BUILD
+    COMMAND
+      ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Qt6::Core>
+      $<TARGET_FILE_DIR:caption-result-handler-test>
+  )
+  add_test(NAME caption-result-handler COMMAND caption-result-handler-test)
+
+  add_executable(
+    browser-caption-server-test
+    tests/browser_caption_server_test.cpp
+    src/BrowserCaptionServer.cpp
+    src/BrowserCaptionServer.h
     src/resources/obs.qrc
   )
-  set_target_properties(tiktok-caption-server-test PROPERTIES AUTOMOC ON AUTORCC ON)
-  target_include_directories(tiktok-caption-server-test PRIVATE src lib/caption_stream)
-  target_link_libraries(tiktok-caption-server-test PRIVATE caption_stream Qt6::Core Qt6::Network)
+  set_target_properties(browser-caption-server-test PROPERTIES AUTOMOC ON AUTORCC ON)
+  target_include_directories(browser-caption-server-test PRIVATE src lib/caption_stream)
+  target_link_libraries(browser-caption-server-test PRIVATE Qt6::Core Qt6::Network)
   add_custom_command(
-    TARGET tiktok-caption-server-test
+    TARGET browser-caption-server-test
     POST_BUILD
     COMMAND
       ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Qt6::Core> $<TARGET_FILE:Qt6::Network>
-      $<TARGET_FILE_DIR:tiktok-caption-server-test>
+      $<TARGET_FILE_DIR:browser-caption-server-test>
   )
-  add_test(NAME tiktok-caption-server COMMAND tiktok-caption-server-test)
+  add_test(NAME browser-caption-server COMMAND browser-caption-server-test)
 endif()

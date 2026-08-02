@@ -1,31 +1,21 @@
-//
-// Created by Rat on 06.10.19.
-//
-
-#ifndef OBS_GOOGLE_CAPTION_PLUGIN_CAPTIONPLUGINMANAGER_H
-#define OBS_GOOGLE_CAPTION_PLUGIN_CAPTIONPLUGINMANAGER_H
-
+#ifndef AI_CAPTION_PLUGIN_CAPTION_PLUGIN_MANAGER_H
+#define AI_CAPTION_PLUGIN_CAPTION_PLUGIN_MANAGER_H
 
 #include "CaptionPluginSettings.h"
 #include "SourceCaptioner.h"
-#include "TikTokCaptionServer.h"
+#include "BrowserCaptionServer.h"
 
 struct CaptioningState {
     bool external_is_streaming = false;
-    bool external_is_recording = false;
     bool external_is_preview_open = false;
-    bool external_is_virtualcam_on = false;
-    string external_scene_collection_name = "";
+    string external_scene_collection_name;
 
     bool is_captioning = false;
     bool is_captioning_streaming = false;
-    bool is_captioning_recording = false;
-    bool is_captioning_virtualcam = false;
     bool is_captioning_preview = false;
-    bool is_captioning_text_output = false;
     bool is_captioning_file_output = false;
-    bool is_captioning_tiktok_overlay = false;
-    string captioning_scene_collection_name = "";
+    bool is_captioning_browser_overlay = false;
+    string captioning_scene_collection_name;
 };
 
 class CaptionPluginManager : public QObject {
@@ -34,35 +24,23 @@ Q_OBJECT
 public:
     CaptionPluginSettings plugin_settings;
     SourceCaptioner source_captioner;
-    TikTokCaptionServer tiktok_caption_server;
+    BrowserCaptionServer browser_caption_server;
     CaptioningState state;
 
-private:
+    explicit CaptionPluginManager(const CaptionPluginSettings &initial_settings);
 
-    int update_count = 0;
-
-public:
-    CaptionPluginManager(const CaptionPluginSettings &initial_settings);
-
-//    void update_settings(CaptionPluginSettings &new_settings, bool force_update = false);
-
-    void external_state_changed(bool is_live, bool is_preview_open, bool is_recording, bool is_virtualcam_on,
-                                const string &scene_collection_name);
-
+    void external_state_changed(
+            bool is_live,
+            bool is_preview_open,
+            const string &scene_collection_name);
     void update_settings(const CaptionPluginSettings &new_settings);
-
-    bool toggle_enabled();
-
-    CaptioningState captioning_state();
-
-public slots:
-
-    void set_settings(const CaptionPluginSettings &new_settings);
+    CaptioningState captioning_state() const;
 
 signals:
-
     void settings_changed(CaptionPluginSettings new_settings);
+
+private:
+    int update_count = 0;
 };
 
-
-#endif //OBS_GOOGLE_CAPTION_PLUGIN_CAPTIONPLUGINMANAGER_H
+#endif // AI_CAPTION_PLUGIN_CAPTION_PLUGIN_MANAGER_H

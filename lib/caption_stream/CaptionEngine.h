@@ -4,13 +4,13 @@
 #include <functional>
 
 #include "CaptionResult.h"
-#include "ThreadsaferCallback.h"
+#include "ThreadSafeCallback.h"
 
 using CaptionEngineCallback = std::function<void(const CaptionResult &caption_result, bool interrupted)>;
 
 class CaptionEngine {
 public:
-    ThreadsaferCallback<CaptionEngineCallback> on_caption_cb_handle;
+    ThreadSafeCallback<CaptionEngineCallback> on_caption_cb_handle;
 
     virtual bool queue_audio_data(const char *data, unsigned int data_size) = 0;
 

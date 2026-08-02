@@ -45,13 +45,12 @@ SourceAudioCaptureSession::SourceAudioCaptureSession(
 ) :
         audio_source(audio_source_arg),
         muting_source(muting_source_arg),
-        on_caption_cb_handle(audio_data_cb),
-        on_status_cb_handle(status_change_cb),
         muted_handling(muted_handling),
         use_muting_cb_signal(true),
+        id(id),
         bytes_per_channel(get_audio_bytes_per_channel(resample_to.format)),
-        resampler(nullptr),
-        id(id) {
+        on_caption_cb_handle(std::move(audio_data_cb)),
+        on_status_cb_handle(std::move(status_change_cb)) {
     debug_log("SourceAudioCaptureSession()");
 
     const struct audio_output_info *obs_audio = audio_output_get_info(obs_get_audio());
@@ -158,9 +157,6 @@ audio_source_capture_status SourceAudioCaptureSession::check_source_status() {
 }
 
 void SourceAudioCaptureSession::audio_capture_cb(obs_source_t *source, const struct audio_data *audio, bool muted) {
-    if (!on_caption_cb_handle.callback_fn)
-        return;
-
     if (!audio || !audio->frames)
         return;
 
@@ -176,16 +172,13 @@ void SourceAudioCaptureSession::audio_capture_cb(obs_source_t *source, const str
 
         if (muted_handling == MUTED_SOURCE_REPLACE_WITH_ZERO) {
             const unsigned int size = audio->frames * bytes_per_channel;
-            uint8_t *buffer = new uint8_t[size];
-            memset(buffer, 0, size);
+            muted_audio_buffer.resize(size, 0);
 
             {
                 std::lock_guard<std::recursive_mutex> lock(on_caption_cb_handle.mutex);
                 if (on_caption_cb_handle.callback_fn)
-                    on_caption_cb_handle.callback_fn(id, buffer, size);
+                    on_caption_cb_handle.callback_fn(id, muted_audio_buffer.data(), size);
             }
-
-            delete[] buffer;
             return;
 
         }

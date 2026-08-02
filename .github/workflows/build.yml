@@ -1,22 +1,61 @@
 name: Build AI Caption Plugin
 
 on:
-  push:
   pull_request:
+    branches:
+      - master
+  push:
+    branches:
+      - master
   workflow_dispatch:
 
 permissions:
   contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   windows:
     name: Windows x64 / OBS 32.2.1
     runs-on: windows-2022
     timeout-minutes: 60
+    outputs:
+      version: ${{ steps.metadata.outputs.version }}
 
     steps:
       - name: Check out source
         uses: actions/checkout@v4
+
+      - name: Read build metadata
+        id: metadata
+        shell: pwsh
+        run: |
+          $buildspec = Get-Content -LiteralPath buildspec.json -Raw | ConvertFrom-Json
+          $sherpaConfig = Get-Content -LiteralPath cmake/common/FindSherpaOnnx.cmake -Raw
+          $sherpaVersion = [regex]::Match($sherpaConfig, 'set\(SHERPA_ONNX_VERSION "([^"]+)"\)').Groups[1].Value
+          if (-not $sherpaVersion) {
+            throw 'Unable to read the sherpa-onnx version.'
+          }
+
+          $dependencyKey = @(
+            $buildspec.dependencies.'obs-studio'.version
+            $buildspec.dependencies.prebuilt.version
+            $buildspec.dependencies.qt6.version
+            $sherpaVersion
+          ) -join '-'
+
+          "version=$($buildspec.version)" >> $env:GITHUB_OUTPUT
+          "dependency_key=$dependencyKey" >> $env:GITHUB_OUTPUT
+
+      - name: Restore dependency downloads
+        uses: actions/cache@v4
+        with:
+          path: |
+            .deps/*.zip
+            build_x64/_deps/sherpa-onnx/*.tar.bz2
+          key: dependency-downloads-${{ runner.os }}-${{ runner.arch }}-${{ steps.metadata.outputs.dependency_key }}
 
       - name: Build, test, and package
         shell: pwsh
@@ -29,12 +68,13 @@ jobs:
           path: |
             release/AI-Caption-Plugin-*-windows-x64.zip
             release/AI-Caption-Plugin-*-windows-x64.zip.sha256
+          compression-level: 0
           if-no-files-found: error
           retention-days: 30
 
   release:
     name: Publish GitHub Release
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
     needs: windows
     runs-on: ubuntu-24.04
     permissions:
@@ -50,10 +90,17 @@ jobs:
       - name: Create release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: >-
-          gh release create "${GITHUB_REF_NAME}"
-          release-assets/*
-          --repo "${GITHUB_REPOSITORY}"
-          --title "AI Caption Plugin ${GITHUB_REF_NAME}"
-          --generate-notes
-          --verify-tag
+          RELEASE_TAG: v${{ needs.windows.outputs.version }}
+        run: |
+          set -euo pipefail
+          if gh release view "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            echo "Release ${RELEASE_TAG} already exists; build verification is complete."
+            exit 0
+          fi
+
+          gh release create "${RELEASE_TAG}" \
+            release-assets/* \
+            --repo "${GITHUB_REPOSITORY}" \
+            --target "${GITHUB_SHA}" \
+            --title "AI Caption Plugin ${RELEASE_TAG}" \
+            --generate-notes

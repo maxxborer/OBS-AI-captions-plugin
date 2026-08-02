@@ -1,69 +1,60 @@
 # AI Caption Plugin development
 
-This branch is a Windows-first modernization of `ratwithacompiler/OBS-captions-plugin`.
-It builds reproducibly against OBS 32.2.1 and defaults to local Russian streaming recognition without a Google API key.
+Проект собирает Windows x64 OBS 32.2.1 plugin с единственным локальным движком sherpa-onnx T-One.
 
-## Prerequisites
+## Требования
 
-- Windows x64
-- Visual Studio 2022 Build Tools with the C++ workload
-- Windows SDK 10.0.22621 or newer
-- CMake 3.28 or newer
-- Git
+- Visual Studio 2022 Build Tools с workload C++;
+- Windows SDK 10.0.22621 или новее;
+- CMake 3.28 или новее;
+- PowerShell 7 (`pwsh`);
+- Git.
 
-Ninja and a Google API key are not required.
+API-ключи, Google SDK и Ninja не требуются.
 
-## Build and test
-
-From the repository root:
+## Сборка и тесты
 
 ```powershell
-cmake --preset windows-x64
+cmake --fresh --preset windows-x64
 cmake --build --preset windows-x64 --parallel
 ctest --test-dir build_x64 -C RelWithDebInfo --output-on-failure
 ```
 
-The first configure downloads pinned OBS/Qt dependency archives and builds the OBS development libraries. Later runs reuse `.deps` and are much faster.
-
-To stage the modern OBS plugin layout and create a ZIP:
+Полная упаковка:
 
 ```powershell
 .\scripts\build-windows.ps1
 ```
 
-The ZIP contains:
+Тестовый набор проверяет:
 
-```text
-ai-caption-plugin/
-  Install-AICaptionPlugin.ps1
-  local-model.json
-  bin/
-    64bit/
-      ai-caption-plugin.dll
-      ai-caption-plugin.pdb
-      sherpa-onnx-c-api.dll
-      onnxruntime.dll
-      onnxruntime_providers_shared.dll
-```
+- контракт локального caption engine и ошибку отсутствующей модели;
+- UTF-8, оформление и SSE-жизненный цикл Browser Source;
+- замены частых английских названий;
+- синтаксис, integrity-проверки и лимит кэша установщика.
 
-For normal installation or an update, extract the ZIP, close OBS, and run `Install-AICaptionPlugin.ps1`. It installs only the `ai-caption-plugin` directory under:
+## Runtime-контракт
 
-```text
-%ProgramData%\obs-studio\plugins\
-```
+- только CPU, один ONNX Runtime inference thread;
+- bounded audio queue до одной секунды;
+- очередь каждого медленного получателя хранит только последнюю ожидающую подпись;
+- worker thread с below-normal priority;
+- распознавание запускается только при наличии stream, browser, file или preview consumer;
+- browser consumer жив, пока открыто SSE-соединение `/events`;
+- локальная модель находится в `models/sherpa-onnx-streaming-t-one-russian-2025-09-08` рядом с данными плагина.
 
-On first install, the script downloads the pinned Russian T-One model (about 128 MB), verifies the archive SHA-256, and writes hashes for its model and token files beside the model. On subsequent updates it preserves only a complete, hash-verified previously installed model. Keep the existing caption plugin installed separately until feature parity is verified. Do not commit API keys or a populated `CMakeUserPresets.json`.
+## Перед выпуском
 
-## Local engine resource policy
+1. Собрать проект с чистым `build_x64`.
+2. Запустить все CTest.
+3. Проверить первый install и update с сохранением модели.
+4. Загрузить DLL в изолированном OBS 32.2.1.
+5. Проверить микрофон отдельно для Browser Source, файла и активного стрима.
 
-- CPU provider only; the GPU and VRAM are never requested.
-- One ONNX Runtime inference thread.
-- OBS delivers 8 kHz mono PCM to the Russian T-One model. Automatic language detection is intentionally disabled.
-- The OBS audio callback adds only to a bounded one-second queue; the local worker runs at below-normal Windows priority and drops old queued audio rather than delaying OBS.
+## CI и релизы
 
-## Current limitations
-
-- The local Russian T-One streaming adapter is the packaged default. Common streaming product names are restored to Latin script by an editable starter replacement dictionary. The legacy Google adapter remains compiled only as a compatibility path and its API-key UI is disabled in the standard preset.
-- The inherited source has a sizeable compiler-warning backlog; warnings are recorded but are not yet treated as errors.
-- The staged package passed the build/test pipeline, an isolated model-install/update smoke test, and an official 6.4-second Russian sample decode with one CPU thread (RTF 0.062). A full live-microphone OBS acceptance test remains to be performed by the streamer before a public release.
-- The current build configuration is Windows x64 only.
+- PR в `master` собирается один раз событием `pull_request`; отдельные `push`-сборки веток отключены.
+- Merge или прямой push в `master` собирает, тестирует и упаковывает плагин, затем создаёт тег и GitHub Release `v<version>` из `buildspec.json` в том же workflow.
+- Тег вручную создавать не нужно: tag-push намеренно не запускает вторую сборку.
+- Ручной `workflow_dispatch` проверяет сборку и сохраняет artifact, но не публикует релиз.
+- CI-кеширует только проверяемые по SHA-256 архивы зависимостей. Полные каталоги сборки не кешируются, поэтому кеш остаётся меньше 1 ГиБ и не переносит path-specific CMake state между runner-ами.

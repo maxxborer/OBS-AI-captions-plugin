@@ -7,16 +7,18 @@ as published by the Free Software Foundation; either version 2
 of the License, or (at your option) any later version.
 *******************************************************************************/
 
-#include "TikTokCaptionServer.h"
+#include "BrowserCaptionServer.h"
 
 #include <QFile>
 #include <QHostAddress>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QList>
 #include <QTcpSocket>
 
 namespace {
 constexpr int kMaximumRequestBytes = 16 * 1024;
+constexpr qint64 kMaximumPendingEventBytes = 64 * 1024;
 
 QByteArray status_text(int status) {
     switch (status) {
@@ -32,34 +34,47 @@ QByteArray status_text(int status) {
 }
 }
 
-TikTokCaptionServer::TikTokCaptionServer(QObject *parent) : QObject(parent) {
-    connect(&server, &QTcpServer::newConnection, this, &TikTokCaptionServer::accept_connections);
+BrowserCaptionServer::BrowserCaptionServer(QObject *parent) : QObject(parent) {
+    connect(&server, &QTcpServer::newConnection, this, &BrowserCaptionServer::accept_connections);
     server.listen(QHostAddress::LocalHost, port);
 }
 
-bool TikTokCaptionServer::is_listening() const {
+bool BrowserCaptionServer::is_listening() const {
     return server.isListening();
 }
 
-QString TikTokCaptionServer::overlay_url() const {
+bool BrowserCaptionServer::has_browser_consumer() const {
+    return browser_consumer_active;
+}
+
+QString BrowserCaptionServer::overlay_url() const {
     return QStringLiteral("http://127.0.0.1:%1/").arg(port);
 }
 
-void TikTokCaptionServer::update_caption(
+void BrowserCaptionServer::update_browser_consumer_presence() {
+    const bool active = !event_clients.isEmpty();
+    if (active == browser_consumer_active)
+        return;
+
+    browser_consumer_active = active;
+    emit browser_consumer_presence_changed(active);
+}
+
+void BrowserCaptionServer::update_caption(
         const std::shared_ptr<OutputCaptionResult> &caption,
-        bool cleared,
-        const std::string &) {
+        bool cleared) {
     if (cleared || !caption) {
         caption_text.clear();
         caption_final = true;
     } else {
-        caption_text = QString::fromStdString(caption->clean_caption_text).simplified();
+        caption_text = QString::fromStdString(caption->output_line).simplified();
         caption_final = caption->caption_result.final;
     }
     ++revision;
+    broadcast_state();
 }
 
-QByteArray TikTokCaptionServer::build_state_json(const QString &text, bool final, std::uint64_t revision) {
+QByteArray BrowserCaptionServer::build_state_json(const QString &text, bool final, std::uint64_t revision) {
     QJsonObject state;
     state.insert(QStringLiteral("text"), text);
     state.insert(QStringLiteral("final"), final);
@@ -67,13 +82,13 @@ QByteArray TikTokCaptionServer::build_state_json(const QString &text, bool final
     return QJsonDocument(state).toJson(QJsonDocument::Compact);
 }
 
-QByteArray TikTokCaptionServer::build_overlay_html() {
+QByteArray BrowserCaptionServer::build_overlay_html() {
     return QByteArrayLiteral(R"HTML(<!doctype html>
 <html lang="ru">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>AI Caption Plugin — TikTok captions</title>
+  <title>AI Caption Plugin — browser captions</title>
   <style>
     @font-face {
       font-family: "Geologica";
@@ -157,14 +172,14 @@ QByteArray TikTokCaptionServer::build_overlay_html() {
     const timeoutMs = Math.min(15000, Math.max(250, Number.parseInt(parameters.get('timeout') || '2400', 10) || 2400));
     const rootStyle = document.documentElement.style;
 
-    function numberParameter(name, fallback, minimum, maximum) {
+    function numberParameter(name, defaultValue, minimum, maximum) {
       const value = Number.parseFloat(parameters.get(name));
-      return Number.isFinite(value) ? Math.min(maximum, Math.max(minimum, value)) : fallback;
+      return Number.isFinite(value) ? Math.min(maximum, Math.max(minimum, value)) : defaultValue;
     }
 
-    function colorParameter(name, fallback) {
+    function colorParameter(name, defaultValue) {
       const value = parameters.get(name) || '';
-      return /^#[0-9a-f]{6}$/iu.test(value) ? value : fallback;
+      return /^#[0-9a-f]{6}$/iu.test(value) ? value : defaultValue;
     }
 
     const font = (parameters.get('font') || 'Geologica').replace(/["'\\]/gu, '').slice(0, 80);
@@ -184,7 +199,8 @@ QByteArray TikTokCaptionServer::build_overlay_html() {
     rootStyle.setProperty('--active-radius', `${numberParameter('radius', 14, 0, 50)}px`);
     rootStyle.setProperty('--active-scale', `${numberParameter('scale', 1.06, 1, 1.5)}`);
     let currentRevision = '';
-    let lastChange = 0;
+    let events = null;
+    let hideTimer = 0;
 
     function render(state) {
       caption.replaceChildren();
@@ -198,30 +214,51 @@ QByteArray TikTokCaptionServer::build_overlay_html() {
       caption.classList.toggle('visible', words.length > 0);
     }
 
-    async function refresh() {
-      try {
-        const response = await fetch('/state', { cache: 'no-store' });
-        const state = await response.json();
-        if (state.revision !== currentRevision) {
-          currentRevision = state.revision;
-          lastChange = performance.now();
-          render(state);
-        }
-        if (lastChange && performance.now() - lastChange > timeoutMs)
-          caption.classList.remove('visible');
-      } catch (_) {
-        caption.classList.remove('visible');
-      }
+    function consumeState(state) {
+      if (state.revision === currentRevision)
+        return;
+      currentRevision = state.revision;
+      render(state);
+      clearTimeout(hideTimer);
+      hideTimer = setTimeout(() => caption.classList.remove('visible'), timeoutMs);
     }
 
-    refresh();
-    setInterval(refresh, 70);
+    function connectEvents() {
+      if (document.hidden || events)
+        return;
+      events = new EventSource('/events');
+      events.onmessage = event => {
+        try {
+          consumeState(JSON.parse(event.data));
+        } catch (_) {
+          caption.classList.remove('visible');
+        }
+      };
+      events.onerror = () => caption.classList.remove('visible');
+    }
+
+    function disconnectEvents() {
+      if (events) {
+        events.close();
+        events = null;
+      }
+      clearTimeout(hideTimer);
+      caption.classList.remove('visible');
+    }
+
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden)
+        disconnectEvents();
+      else
+        connectEvents();
+    });
+    connectEvents();
   </script>
 </body>
 </html>)HTML");
 }
 
-QByteArray TikTokCaptionServer::build_designer_html() {
+QByteArray BrowserCaptionServer::build_designer_html() {
     return QByteArrayLiteral(R"HTML(<!doctype html>
 <html lang="ru">
 <head>
@@ -395,11 +432,10 @@ QByteArray TikTokCaptionServer::build_designer_html() {
   document.getElementById('copy').addEventListener('click', async () => {
     try {
       await navigator.clipboard.writeText(url.value);
+      copied.textContent = 'URL скопирован.';
     } catch (_) {
-      url.select();
-      document.execCommand('copy');
+      copied.textContent = 'Не удалось скопировать. Выделите URL вручную.';
     }
-    copied.textContent = 'URL скопирован.';
   });
   document.getElementById('open').addEventListener('click', () => window.open(url.value, '_blank', 'noopener'));
   update();
@@ -408,7 +444,7 @@ QByteArray TikTokCaptionServer::build_designer_html() {
 </html>)HTML");
 }
 
-void TikTokCaptionServer::accept_connections() {
+void BrowserCaptionServer::accept_connections() {
     while (server.hasPendingConnections()) {
         QTcpSocket *socket = server.nextPendingConnection();
         if (!socket)
@@ -416,11 +452,20 @@ void TikTokCaptionServer::accept_connections() {
 
         socket->setParent(this);
         connect(socket, &QTcpSocket::readyRead, this, [this, socket] { read_request(socket); });
-        connect(socket, &QTcpSocket::disconnected, socket, &QObject::deleteLater);
+        connect(socket, &QTcpSocket::disconnected, this, [this, socket] {
+            if (event_clients.remove(socket))
+                update_browser_consumer_presence();
+            socket->deleteLater();
+        });
     }
 }
 
-void TikTokCaptionServer::read_request(QTcpSocket *socket) {
+void BrowserCaptionServer::read_request(QTcpSocket *socket) {
+    if (socket->property("captionEventStream").toBool()) {
+        socket->readAll();
+        return;
+    }
+
     QByteArray request = socket->property("captionRequest").toByteArray();
     request.append(socket->readAll());
 
@@ -448,19 +493,18 @@ void TikTokCaptionServer::read_request(QTcpSocket *socket) {
         send_response(socket, 200, "text/html; charset=utf-8", build_overlay_html());
     } else if (path == "/setup" || path == "/designer") {
         send_response(socket, 200, "text/html; charset=utf-8", build_designer_html());
-    } else if (path == "/state") {
-        send_response(socket, 200, "application/json; charset=utf-8",
-                      build_state_json(caption_text, caption_final, revision));
+    } else if (path == "/events") {
+        start_event_stream(socket);
     } else if (path == "/assets/geologica.ttf") {
         QFile font(QStringLiteral(":/fonts/geologica.ttf"));
         if (font.open(QIODevice::ReadOnly))
-            send_response(socket, 200, "font/ttf", font.readAll());
+            send_response(socket, 200, "font/ttf", font.readAll(), true);
         else
             send_response(socket, 404, "text/plain; charset=utf-8", "Font not found");
     } else if (path == "/licenses/geologica") {
         QFile license(QStringLiteral(":/licenses/geologica-ofl.txt"));
         if (license.open(QIODevice::ReadOnly))
-            send_response(socket, 200, "text/plain; charset=utf-8", license.readAll());
+            send_response(socket, 200, "text/plain; charset=utf-8", license.readAll(), true);
         else
             send_response(socket, 404, "text/plain; charset=utf-8", "License not found");
     } else if (path == "/favicon.ico") {
@@ -470,15 +514,52 @@ void TikTokCaptionServer::read_request(QTcpSocket *socket) {
     }
 }
 
-void TikTokCaptionServer::send_response(
+void BrowserCaptionServer::start_event_stream(QTcpSocket *socket) {
+    socket->setProperty("captionEventStream", true);
+    socket->setProperty("captionRequest", QByteArray());
+    event_clients.insert(socket);
+
+    QByteArray response = "HTTP/1.1 200 OK\r\n";
+    response += "Content-Type: text/event-stream; charset=utf-8\r\n";
+    response += "Cache-Control: no-cache, no-transform\r\n";
+    response += "X-Content-Type-Options: nosniff\r\n";
+    response += "Connection: keep-alive\r\n\r\n";
+    response += "retry: 1000\n\n";
+    response += "data: " + build_state_json(caption_text, caption_final, revision) + "\n\n";
+    socket->write(response);
+    update_browser_consumer_presence();
+}
+
+void BrowserCaptionServer::broadcast_state() {
+    if (event_clients.isEmpty())
+        return;
+
+    const QByteArray event =
+            "data: " + build_state_json(caption_text, caption_final, revision) + "\n\n";
+    QList<QTcpSocket *> stalled_clients;
+    for (QTcpSocket *socket : event_clients) {
+        if (socket->bytesToWrite() > kMaximumPendingEventBytes) {
+            stalled_clients.push_back(socket);
+        } else if (socket->state() == QAbstractSocket::ConnectedState) {
+            socket->write(event);
+        }
+    }
+    for (QTcpSocket *socket : stalled_clients)
+        socket->abort();
+}
+
+void BrowserCaptionServer::send_response(
         QTcpSocket *socket,
         int status,
         const QByteArray &content_type,
-        const QByteArray &body) const {
+        const QByteArray &body,
+        bool immutable) const {
     QByteArray response = "HTTP/1.1 " + status_text(status) + "\r\n";
     response += "Content-Type: " + content_type + "\r\n";
     response += "Content-Length: " + QByteArray::number(body.size()) + "\r\n";
-    response += "Cache-Control: no-store, no-cache, must-revalidate\r\n";
+    response += immutable
+            ? "Cache-Control: public, max-age=31536000, immutable\r\n"
+            : "Cache-Control: no-store, no-cache, must-revalidate\r\n";
     response += "X-Content-Type-Options: nosniff\r\n";
     response += "Connection: close\r\n\r\n";
     response += body;

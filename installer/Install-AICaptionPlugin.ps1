@@ -7,6 +7,7 @@ $ErrorActionPreference = 'Stop'
 $pluginName = 'ai-caption-plugin'
 $packagePluginDirectory = $PSScriptRoot
 $modelManifestPath = Join-Path $PSScriptRoot 'local-model.json'
+$cacheLimitBytes = 1GB
 
 function Get-NormalizedPath([string] $Path) {
     return [System.IO.Path]::GetFullPath($Path).TrimEnd([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)
@@ -29,6 +30,35 @@ function Test-Administrator {
 
 function Get-Sha256([string] $Path) {
     return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
+}
+
+function Limit-DownloadCache(
+    [string] $CacheDirectory,
+    [long] $MaximumBytes,
+    [string] $ProtectedPath = ''
+) {
+    if (-not (Test-Path -LiteralPath $CacheDirectory -PathType Container)) {
+        return
+    }
+
+    $protected = if ([string]::IsNullOrWhiteSpace($ProtectedPath)) { '' } else { Get-NormalizedPath $ProtectedPath }
+    $files = @(Get-ChildItem -LiteralPath $CacheDirectory -File | Sort-Object LastWriteTimeUtc)
+    [long] $total = ($files | Measure-Object Length -Sum).Sum
+    foreach ($file in $files) {
+        if ($total -le $MaximumBytes) {
+            break
+        }
+        $safePath = Assert-ChildPath $file.FullName $CacheDirectory
+        if ($protected -and (Get-NormalizedPath $safePath) -eq $protected) {
+            continue
+        }
+        Remove-Item -LiteralPath $safePath -Force
+        $total -= $file.Length
+    }
+
+    if ($total -gt $MaximumBytes) {
+        throw "Download cache exceeds the hard limit of $MaximumBytes bytes."
+    }
 }
 
 function Get-RequiredModelFileMarkers([string] $ModelPath, $Manifest) {
@@ -84,7 +114,12 @@ function Test-InstalledModel([string] $ModelPath, $Manifest) {
     }
 }
 
-function Install-LocalModel([string] $PluginDirectory, $Manifest) {
+function Install-LocalModel(
+    [string] $PluginDirectory,
+    [string] $CacheDirectory,
+    [long] $MaximumCacheBytes,
+    $Manifest
+) {
     $modelsDirectory = Join-Path $PluginDirectory 'data\models'
     $modelDirectory = Assert-ChildPath (Join-Path $modelsDirectory $Manifest.modelDirectory) $PluginDirectory
     if (Test-InstalledModel $modelDirectory $Manifest) {
@@ -97,20 +132,45 @@ function Install-LocalModel([string] $PluginDirectory, $Manifest) {
         throw 'Windows tar.exe is required to unpack the local model. Update Windows and run the installer again.'
     }
 
+    if ([long] $Manifest.archiveBytes -le 0 -or [long] $Manifest.archiveBytes -gt $MaximumCacheBytes) {
+        throw 'The model archive does not fit within the 1 GiB download-cache limit.'
+    }
+
     New-Item -ItemType Directory -Force -Path $modelsDirectory | Out-Null
-    $downloadPath = Assert-ChildPath (Join-Path $modelsDirectory (".$($Manifest.archiveFile).download")) $PluginDirectory
+    New-Item -ItemType Directory -Force -Path $CacheDirectory | Out-Null
+    $cacheName = "$($Manifest.sha256)-$($Manifest.archiveFile)"
+    $cachedArchive = Assert-ChildPath (Join-Path $CacheDirectory $cacheName) $CacheDirectory
+    $downloadPath = Assert-ChildPath (Join-Path $CacheDirectory (".download-" + [guid]::NewGuid().ToString('N'))) $CacheDirectory
     $extractRoot = Assert-ChildPath (Join-Path $modelsDirectory (".extract-" + [guid]::NewGuid().ToString('N'))) $PluginDirectory
     $extractedModelDirectory = Join-Path $extractRoot $Manifest.modelDirectory
 
     try {
-        Write-Host 'Скачиваю быструю локальную русскую модель (около 128 МБ)...'
-        Invoke-WebRequest -Uri $Manifest.url -OutFile $downloadPath
-        if ((Get-Sha256 $downloadPath) -ne $Manifest.sha256) {
-            throw 'Downloaded model SHA-256 does not match the signed release manifest.'
+        Limit-DownloadCache $CacheDirectory $MaximumCacheBytes $cachedArchive
+        if (Test-Path -LiteralPath $cachedArchive -PathType Leaf) {
+            if ((Get-Item -LiteralPath $cachedArchive).Length -eq [long] $Manifest.archiveBytes -and
+                (Get-Sha256 $cachedArchive) -eq $Manifest.sha256) {
+                (Get-Item -LiteralPath $cachedArchive).LastWriteTimeUtc = [DateTime]::UtcNow
+                Write-Host 'Использую проверенную модель из локального кэша.'
+            }
+            else {
+                Remove-Item -LiteralPath $cachedArchive -Force
+            }
+        }
+
+        if (-not (Test-Path -LiteralPath $cachedArchive -PathType Leaf)) {
+            Limit-DownloadCache $CacheDirectory ($MaximumCacheBytes - [long] $Manifest.archiveBytes)
+            Write-Host 'Скачиваю быструю локальную русскую модель (около 128 МБ)...'
+            Invoke-WebRequest -Uri $Manifest.url -OutFile $downloadPath
+            if ((Get-Item -LiteralPath $downloadPath).Length -ne [long] $Manifest.archiveBytes -or
+                (Get-Sha256 $downloadPath) -ne $Manifest.sha256) {
+                throw 'Downloaded model does not match the signed release manifest.'
+            }
+            Move-Item -LiteralPath $downloadPath -Destination $cachedArchive
+            Limit-DownloadCache $CacheDirectory $MaximumCacheBytes $cachedArchive
         }
 
         New-Item -ItemType Directory -Force -Path $extractRoot | Out-Null
-        & $tar.Source -xjf $downloadPath -C $extractRoot
+        & $tar.Source -xjf $cachedArchive -C $extractRoot
         if ($LASTEXITCODE -ne 0) {
             throw 'Could not unpack the downloaded local model.'
         }
@@ -132,7 +192,7 @@ function Install-LocalModel([string] $PluginDirectory, $Manifest) {
         Write-Host 'Локальная модель установлена и проверена.'
     }
     finally {
-        if (Test-Path -LiteralPath $downloadPath) {
+        if (Test-Path -LiteralPath $downloadPath -PathType Leaf) {
             Remove-Item -LiteralPath $downloadPath -Force
         }
         if (Test-Path -LiteralPath $extractRoot) {
@@ -149,16 +209,24 @@ if (-not (Test-Path -LiteralPath $modelManifestPath -PathType Leaf)) {
 }
 
 $manifest = Get-Content -LiteralPath $modelManifestPath -Raw | ConvertFrom-Json
-if (-not ($manifest.url -and $manifest.sha256 -and $manifest.modelDirectory -and $manifest.archiveFile -and @($manifest.requiredFiles).Count)) {
+if (-not ($manifest.url -and $manifest.archiveBytes -and $manifest.sha256 -and $manifest.modelDirectory -and $manifest.archiveFile -and @($manifest.requiredFiles).Count)) {
     throw 'The local model manifest is invalid.'
 }
 
 $defaultPluginRoot = Get-NormalizedPath (Join-Path $env:ProgramData 'obs-studio\plugins')
 $requestedPluginRoot = Get-NormalizedPath $ObsPluginRoot
+$cacheDirectory = Assert-ChildPath (Join-Path $requestedPluginRoot '.ai-caption-plugin-cache') $requestedPluginRoot
 if ($requestedPluginRoot -eq $defaultPluginRoot -and -not (Test-Administrator)) {
     Write-Host 'Запрашиваю права администратора для установки плагина в OBS...'
-    $arguments = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $PSCommandPath, '-ObsPluginRoot', $requestedPluginRoot)
-    $process = Start-Process -FilePath 'powershell.exe' -Verb RunAs -ArgumentList $arguments -PassThru -Wait
+    $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
+    $startInfo.FileName = (Get-Process -Id $PID).Path
+    $startInfo.UseShellExecute = $true
+    $startInfo.Verb = 'runas'
+    foreach ($argument in @('-NoLogo', '-NoProfile', '-File', $PSCommandPath, '-ObsPluginRoot', $requestedPluginRoot)) {
+        $startInfo.ArgumentList.Add($argument)
+    }
+    $process = [System.Diagnostics.Process]::Start($startInfo)
+    $process.WaitForExit()
     exit $process.ExitCode
 }
 
@@ -183,10 +251,10 @@ try {
         $existingModelReusable = Test-InstalledModel $existingModelDirectory $manifest
         if ($existingModelReusable) {
             Write-Host 'Найдена проверенная локальная модель; она будет сохранена при обновлении.'
+            $stagingModelsDirectory = Join-Path $stagingDirectory 'data\models'
+            New-Item -ItemType Directory -Force -Path $stagingModelsDirectory | Out-Null
+            Copy-Item -LiteralPath $existingModelDirectory -Destination (Join-Path $stagingModelsDirectory $manifest.modelDirectory) -Recurse -Force
         }
-        $stagingModelsDirectory = Join-Path $stagingDirectory 'data\models'
-        New-Item -ItemType Directory -Force -Path $stagingModelsDirectory | Out-Null
-        Copy-Item -LiteralPath $existingModelDirectory -Destination (Join-Path $stagingModelsDirectory $manifest.modelDirectory) -Recurse -Force
     }
 
     if (Test-Path -LiteralPath $pluginDirectory) {
@@ -203,13 +271,13 @@ try {
         Write-Host 'Сохраняю проверенную локальную модель при обновлении.'
     }
     else {
-        Install-LocalModel $pluginDirectory $manifest
+        Install-LocalModel $pluginDirectory $cacheDirectory $cacheLimitBytes $manifest
     }
 
     if ($backupCreated -and (Test-Path -LiteralPath $backupDirectory)) {
         Remove-Item -LiteralPath $backupDirectory -Recurse -Force
     }
-    Write-Host 'AI Caption Plugin обновлён. Быстрая русская модель установлена и выбрана автоматически; Google API не требуется.'
+    Write-Host 'AI Caption Plugin обновлён. Быстрая локальная русская модель установлена и выбрана автоматически.'
 }
 catch {
     if ($backupCreated -and (Test-Path -LiteralPath $backupDirectory)) {

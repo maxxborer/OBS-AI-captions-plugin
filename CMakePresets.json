@@ -24,12 +24,7 @@
       },
       "cacheVariables": {
         "BUILD_SHARED_LIBS": true,
-        "CMAKE_COMPILE_WARNING_AS_ERROR": false,
-        "CMAKE_POLICY_VERSION_MINIMUM": "3.5",
-        "ENABLE_CUSTOM_API_KEY": false,
-        "ENABLE_FRONTEND_API": true,
-        "ENABLE_QT": true,
-        "SPEECH_API_GOOGLE_HTTP_OLD": true
+        "CMAKE_COMPILE_WARNING_AS_ERROR": false
       }
     }
   ],

@@ -32,7 +32,7 @@
   },
   "name": "ai-caption-plugin",
   "displayName": "AI Caption Plugin",
-  "version": "0.38.1",
+  "version": "0.39.0",
   "author": "AI Caption Plugin contributors",
   "website": "https://github.com/ratwithacompiler/OBS-captions-plugin",
   "email": ""

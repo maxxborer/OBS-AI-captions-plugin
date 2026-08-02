@@ -1,4 +1,4 @@
-#include "TikTokCaptionServer.h"
+#include "BrowserCaptionServer.h"
 
 #include <QCoreApplication>
 #include <QElapsedTimer>
@@ -7,8 +7,10 @@
 #include <QJsonObject>
 #include <QTcpSocket>
 
+#include <chrono>
 #include <cstdlib>
 #include <iostream>
+#include <memory>
 
 namespace {
 void require(bool condition, const char *message) {
@@ -20,7 +22,7 @@ void require(bool condition, const char *message) {
 
 QByteArray request_path(QCoreApplication &application, const QByteArray &path) {
     QTcpSocket client;
-    client.connectToHost(QStringLiteral("127.0.0.1"), TikTokCaptionServer::port);
+    client.connectToHost(QStringLiteral("127.0.0.1"), BrowserCaptionServer::port);
     require(client.waitForConnected(1000), "Client must connect to the local overlay server");
     client.write("GET " + path + " HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n");
     require(client.waitForBytesWritten(1000), "Client must send an HTTP request");
@@ -41,7 +43,7 @@ QByteArray request_path(QCoreApplication &application, const QByteArray &path) {
 int main(int argc, char **argv) {
     QCoreApplication application(argc, argv);
 
-    const QByteArray json = TikTokCaptionServer::build_state_json(
+    const QByteArray json = BrowserCaptionServer::build_state_json(
             QString::fromUtf8("быстрые слова OBS"), false, 42);
     const QJsonObject state = QJsonDocument::fromJson(json).object();
     require(state.value("text").toString() == QString::fromUtf8("быстрые слова OBS"),
@@ -50,7 +52,7 @@ int main(int argc, char **argv) {
     require(state.value("revision").toString() == QStringLiteral("42"),
             "Revision must be serialized without numeric precision loss");
 
-    const QByteArray html = TikTokCaptionServer::build_overlay_html();
+    const QByteArray html = BrowserCaptionServer::build_overlay_html();
     require(html.contains("parameters.get('words')") && html.contains("slice(-maximumWords)"),
             "Overlay word count must be configurable in the Browser Source URL");
     require(html.contains("parameters.get('timeout')") && html.contains("timeoutMs"),
@@ -58,7 +60,12 @@ int main(int argc, char **argv) {
     require(html.contains("index === words.length - 1") && html.contains("' active'"),
             "Overlay must mark the latest partial word as active");
     require(html.contains("textContent = word"), "Overlay must render recognized text without HTML injection");
-    require(html.contains("setInterval(refresh, 70)"), "Overlay must refresh quickly enough for live captions");
+    require(html.contains("new EventSource('/events')"),
+            "Overlay must receive captions immediately over one persistent connection");
+    require(!html.contains("setInterval(refresh, 70)"),
+            "Overlay must not poll the local server continuously");
+    require(html.contains("document.hidden") && html.contains("visibilitychange"),
+            "A hidden Browser Source must close its event stream and release its recognition consumer");
     require(html.contains("--caption-font-size") && html.contains("--active-background"),
             "Overlay appearance must be customizable with Browser Source CSS variables");
     require(html.contains("Geologica") && html.contains("/assets/geologica.ttf"),
@@ -68,15 +75,24 @@ int main(int argc, char **argv) {
             "Overlay style must be configurable through the generated Browser Source URL");
     require(!html.contains("15vh"), "Overlay must not force a position inside the vertical canvas");
 
-    const QByteArray designer = TikTokCaptionServer::build_designer_html();
+    const QByteArray designer = BrowserCaptionServer::build_designer_html();
     require(designer.contains("Конструктор субтитров"), "A visual overlay designer must be available in Russian");
     require(designer.contains("type=\"color\"") && designer.contains("Скопировать URL"),
             "Designer must provide visual color controls and a generated URL");
     require(designer.contains("value=\"#8b5cf6\"") && designer.contains("value=\"Geologica\""),
             "Designer must start with the requested purple and Geologica preset");
 
-    TikTokCaptionServer server;
-    require(server.is_listening(), "TikTok caption server must listen on localhost");
+    BrowserCaptionServer server;
+    require(server.is_listening(), "Browser caption server must listen on localhost");
+    require(!server.has_browser_consumer(),
+            "Browser captions must stay idle until an overlay requests caption events");
+    bool consumer_activated = false;
+    QObject::connect(
+            &server,
+            &BrowserCaptionServer::browser_consumer_presence_changed,
+            [&](bool active) {
+                consumer_activated = consumer_activated || active;
+            });
     require(server.overlay_url() == QStringLiteral("http://127.0.0.1:37545/"),
             "Overlay URL must remain stable for the OBS Browser Source");
 
@@ -91,10 +107,58 @@ int main(int argc, char **argv) {
     const QByteArray font_response = request_path(application, "/assets/geologica.ttf");
     require(font_response.startsWith("HTTP/1.1 200 OK"), "Bundled Geologica font must be available over HTTP");
     require(font_response.contains("font/ttf"), "Bundled Geologica font must use the font content type");
+    require(font_response.contains("max-age=31536000, immutable"),
+            "Immutable overlay assets should use the browser cache");
+    require(!server.has_browser_consumer(),
+            "Opening the overlay, designer, or font must not start recognition without an event consumer");
 
-    const QByteArray state_response = request_path(application, "/state");
-    require(state_response.startsWith("HTTP/1.1 200 OK"), "Caption state must be available over HTTP");
-    require(state_response.contains("application/json"), "Caption state must have the JSON content type");
+    QTcpSocket event_client;
+    event_client.connectToHost(QStringLiteral("127.0.0.1"), BrowserCaptionServer::port);
+    require(event_client.waitForConnected(1000), "Event client must connect to the local overlay server");
+    event_client.write("GET /events HTTP/1.1\r\nHost: 127.0.0.1\r\nAccept: text/event-stream\r\n\r\n");
+    require(event_client.waitForBytesWritten(1000), "Event client must request the caption stream");
+    QElapsedTimer event_timer;
+    event_timer.start();
+    QByteArray event_response;
+    while (event_timer.elapsed() < 1000 && !event_response.contains("\n\ndata: ")) {
+        application.processEvents(QEventLoop::AllEvents, 20);
+        if (event_client.waitForReadyRead(20))
+            event_response.append(event_client.readAll());
+    }
+    event_response.append(event_client.readAll());
+    require(event_response.startsWith("HTTP/1.1 200 OK"), "Caption event stream must be available over HTTP");
+    require(event_response.contains("text/event-stream"), "Caption event stream must use the SSE content type");
+    require(server.has_browser_consumer(), "An open caption event stream must register an active consumer");
+    require(consumer_activated, "An event stream must notify the caption manager to start recognition");
+
+    const auto now = std::chrono::steady_clock::now();
+    auto pushed_caption = std::make_shared<OutputCaptionResult>(
+            CaptionResult(1, false, 0.7, "русский OBS", "", now, now),
+            false);
+    pushed_caption->output_line = "русский OBS";
+    server.update_caption(pushed_caption, false);
+    QByteArray pushed_event;
+    event_timer.restart();
+    while (event_timer.elapsed() < 1000 && !pushed_event.contains("русский OBS")) {
+        application.processEvents(QEventLoop::AllEvents, 20);
+        if (event_client.waitForReadyRead(20))
+            pushed_event.append(event_client.readAll());
+    }
+    pushed_event.append(event_client.readAll());
+    require(pushed_event.contains("русский OBS"),
+            "Caption updates must be pushed without waiting for another HTTP request");
+
+    event_client.disconnectFromHost();
+    event_client.waitForDisconnected(1000);
+    event_timer.restart();
+    while (event_timer.elapsed() < 1000 && server.has_browser_consumer())
+        application.processEvents(QEventLoop::AllEvents, 20);
+    require(!server.has_browser_consumer(),
+            "Recognition must return to idle immediately after the event consumer disconnects");
+
+    const QByteArray removed_state_response = request_path(application, "/state");
+    require(removed_state_response.startsWith("HTTP/1.1 404 Not Found"),
+            "The removed polling endpoint must not remain as a compatibility path");
 
     return 0;
 }

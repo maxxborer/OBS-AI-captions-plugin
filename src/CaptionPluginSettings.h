@@ -2,8 +2,8 @@
 // Created by Rat on 06.10.19.
 //
 
-#ifndef OBS_GOOGLE_CAPTION_PLUGIN_CAPTIONPLUGINSETTINGS_H
-#define OBS_GOOGLE_CAPTION_PLUGIN_CAPTIONPLUGINSETTINGS_H
+#ifndef AI_CAPTION_PLUGIN_SETTINGS_H
+#define AI_CAPTION_PLUGIN_SETTINGS_H
 
 
 #include "SourceCaptioner.h"
@@ -25,12 +25,7 @@ struct CaptionPluginSettings {
         return !(rhs == *this);
     }
 
-    void print(const char *line_prefix = "") {
-        printf("%sCaptionPluginSettings\n", line_prefix);
-        printf("%senabled: %d\n", line_prefix, enabled);
-        source_cap_settings.print((string(line_prefix) + "").c_str());
-    }
 };
 
 
-#endif //OBS_GOOGLE_CAPTION_PLUGIN_CAPTIONPLUGINSETTINGS_H
+#endif // AI_CAPTION_PLUGIN_SETTINGS_H

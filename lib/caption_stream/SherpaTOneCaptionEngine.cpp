@@ -43,6 +43,7 @@ SherpaTOneCaptionEngine::SherpaTOneCaptionEngine(const LocalCaptionEngineSetting
         : num_threads(std::max(1U, settings.num_threads)),
           max_pending_samples(kSampleRate * std::max(1U, settings.max_pending_audio_ms) / 1000U),
           model_directory(settings.model_directory),
+          audio_ring(max_pending_samples),
           first_caption_at(std::chrono::steady_clock::now()) {
     if (model_directory.empty())
         throw std::runtime_error("Local Russian model directory is unavailable. Run Install-AICaptionPlugin.ps1 again.");
@@ -82,23 +83,46 @@ bool SherpaTOneCaptionEngine::queue_audio_data(const char *data, unsigned int da
         return false;
 
     const std::size_t sample_count = data_size / sizeof(std::int16_t);
-    std::vector<std::int16_t> audio(sample_count);
-    std::memcpy(audio.data(), data, sample_count * sizeof(std::int16_t));
-
+    bool wake_worker = false;
     {
         std::lock_guard<std::mutex> lock(queue_mutex);
-        while (!pending_audio.empty() && pending_samples + sample_count > max_pending_samples) {
-            pending_samples -= pending_audio.front().size();
-            pending_audio.pop_front();
+        wake_worker = audio_ring_size == 0;
+        if (sample_count >= max_pending_samples) {
+            const char *latest_samples =
+                    data + (sample_count - max_pending_samples) * sizeof(std::int16_t);
+            std::memcpy(
+                    audio_ring.data(),
+                    latest_samples,
+                    max_pending_samples * sizeof(std::int16_t));
+            audio_ring_head = 0;
+            audio_ring_size = max_pending_samples;
+        } else {
+            const std::size_t overflow =
+                    audio_ring_size + sample_count > max_pending_samples
+                            ? audio_ring_size + sample_count - max_pending_samples
+                            : 0;
+            audio_ring_head = (audio_ring_head + overflow) % max_pending_samples;
+            audio_ring_size -= overflow;
+
+            const std::size_t tail =
+                    (audio_ring_head + audio_ring_size) % max_pending_samples;
+            const std::size_t first_copy =
+                    std::min(sample_count, max_pending_samples - tail);
+            std::memcpy(
+                    audio_ring.data() + tail,
+                    data,
+                    first_copy * sizeof(std::int16_t));
+            if (first_copy < sample_count) {
+                std::memcpy(
+                        audio_ring.data(),
+                        data + first_copy * sizeof(std::int16_t),
+                        (sample_count - first_copy) * sizeof(std::int16_t));
+            }
+            audio_ring_size += sample_count;
         }
-
-        if (sample_count > max_pending_samples)
-            audio.erase(audio.begin(), audio.end() - static_cast<std::ptrdiff_t>(max_pending_samples));
-
-        pending_samples += audio.size();
-        pending_audio.push_back(std::move(audio));
     }
-    queue_cv.notify_one();
+    if (wake_worker)
+        queue_cv.notify_one();
     return true;
 }
 
@@ -123,27 +147,44 @@ void SherpaTOneCaptionEngine::worker_loop() {
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
 #endif
 
+    std::vector<std::int16_t> audio;
+    std::vector<float> samples;
+    audio.reserve(max_pending_samples);
+    samples.reserve(max_pending_samples);
     while (!stopping.load()) {
-        std::vector<std::int16_t> audio;
         {
             std::unique_lock<std::mutex> lock(queue_mutex);
-            queue_cv.wait(lock, [this] { return stopping.load() || !pending_audio.empty(); });
+            queue_cv.wait(lock, [this] { return stopping.load() || audio_ring_size > 0; });
             if (stopping.load())
                 break;
 
-            audio = std::move(pending_audio.front());
-            pending_samples -= audio.size();
-            pending_audio.pop_front();
+            audio.resize(audio_ring_size);
+            const std::size_t first_copy =
+                    std::min(audio_ring_size, max_pending_samples - audio_ring_head);
+            std::memcpy(
+                    audio.data(),
+                    audio_ring.data() + audio_ring_head,
+                    first_copy * sizeof(std::int16_t));
+            if (first_copy < audio_ring_size) {
+                std::memcpy(
+                        audio.data() + first_copy,
+                        audio_ring.data(),
+                        (audio_ring_size - first_copy) * sizeof(std::int16_t));
+            }
+            audio_ring_head = (audio_ring_head + audio_ring_size) % max_pending_samples;
+            audio_ring_size = 0;
         }
-        decode_audio(audio);
+        decode_audio(audio, samples);
     }
 }
 
-void SherpaTOneCaptionEngine::decode_audio(const std::vector<std::int16_t> &audio) {
+void SherpaTOneCaptionEngine::decode_audio(
+        const std::vector<std::int16_t> &audio,
+        std::vector<float> &samples) {
     if (audio.empty())
         return;
 
-    std::vector<float> samples(audio.size());
+    samples.resize(audio.size());
     std::transform(audio.begin(), audio.end(), samples.begin(), [](std::int16_t sample) {
         return static_cast<float>(sample) / 32768.0F;
     });

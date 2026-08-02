@@ -24,7 +24,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include <obs.hpp>
 #include <functional>
 #include <mutex>
-#include <lib/caption_stream/ThreadsaferCallback.h>
+#include <ThreadSafeCallback.h>
 #include "data.h"
 
 class OutputAudioCaptureSession {
@@ -34,8 +34,8 @@ class OutputAudioCaptureSession {
     const int bytes_per_channel;
     const int track_index;
 public:
-    ThreadsaferCallback<audio_chunk_data_cb> on_caption_cb_handle;
-    ThreadsaferCallback<audio_capture_status_change_cb> on_status_cb_handle;
+    ThreadSafeCallback<audio_chunk_data_cb> on_caption_cb_handle;
+    ThreadSafeCallback<audio_capture_status_change_cb> on_status_cb_handle;
 
     OutputAudioCaptureSession(
             int track_index,

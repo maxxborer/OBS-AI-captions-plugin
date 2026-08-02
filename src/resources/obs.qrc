@@ -1,9 +1,4 @@
 <RCC>
-  <qresource prefix="/res">
-  </qresource>
-  <qresource prefix="/settings">
-    <file>images/settings/general.svg</file>
-  </qresource>
   <qresource prefix="/fonts">
     <file alias="geologica.ttf">fonts/Geologica-Variable.ttf</file>
   </qresource>
