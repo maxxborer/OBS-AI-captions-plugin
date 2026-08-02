@@ -24,7 +24,6 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include <QAction>
 #include <QMenu>
 #include <QPointer>
-#include <thread>
 
 #include "ui/MainCaptionWidget.h"
 #include "caption_settings_storage.h"
@@ -170,8 +169,7 @@ void destroy_plugin_runtime() {
 }
 
 static void save_or_load_event_callback(obs_data_t *save_data, bool saving, void *) {
-    int tid = std::hash<std::thread::id>{}(std::this_thread::get_id());
-    info_log("save_or_load_event_callback %d, %d", saving, tid);
+    info_log("save_or_load_event_callback saving=%d", saving);
 
     if (saving && plugin_manager) {
         save_CaptionPluginSettings(save_data, plugin_manager->plugin_settings);
@@ -195,8 +193,7 @@ static void save_or_load_event_callback(obs_data_t *save_data, bool saving, void
 
 
 bool obs_module_load(void) {
-    info_log("ai_caption_plugin %s obs_module_load %d", VERSION_STRING,
-             (int) std::hash<std::thread::id>{}(std::this_thread::get_id()));
+    info_log("ai_caption_plugin %s obs_module_load", VERSION_STRING);
     qRegisterMetaType<std::string>();
     qRegisterMetaType<shared_ptr<OutputCaptionResult>>();
     qRegisterMetaType<CaptionResult>();

@@ -37,7 +37,7 @@ class SourceAudioCaptureSession {
     audio_source_capture_status capture_status;
     bool use_muting_cb_signal = true;
     const int id;
-    const int bytes_per_channel;
+    const size_t bytes_per_channel;
     std::vector<uint8_t> muted_audio_buffer;
 public:
     ThreadSafeCallback<audio_chunk_data_cb> on_caption_cb_handle;

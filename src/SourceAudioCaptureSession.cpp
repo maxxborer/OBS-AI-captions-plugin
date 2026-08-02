@@ -171,7 +171,7 @@ void SourceAudioCaptureSession::audio_capture_cb(obs_source_t *source, const str
             return;
 
         if (muted_handling == MUTED_SOURCE_REPLACE_WITH_ZERO) {
-            const unsigned int size = audio->frames * bytes_per_channel;
+            const size_t size = audio->frames * bytes_per_channel;
             muted_audio_buffer.resize(size, 0);
 
             {
@@ -188,7 +188,7 @@ void SourceAudioCaptureSession::audio_capture_cb(obs_source_t *source, const str
 
     if (!resampler) {
         // correct format already, no need to resample;
-        unsigned int size = audio->frames * bytes_per_channel;
+        const size_t size = audio->frames * bytes_per_channel;
         {
             std::lock_guard<std::recursive_mutex> lock(on_caption_cb_handle.mutex);
             if (on_caption_cb_handle.callback_fn)
@@ -212,7 +212,7 @@ void SourceAudioCaptureSession::audio_capture_cb(obs_source_t *source, const str
             return;
         }
 
-        unsigned int size = out_frames * bytes_per_channel;
+        const size_t size = out_frames * bytes_per_channel;
         {
             std::lock_guard<std::recursive_mutex> lock(on_caption_cb_handle.mutex);
             if (on_caption_cb_handle.callback_fn)
