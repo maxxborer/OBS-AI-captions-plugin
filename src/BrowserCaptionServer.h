@@ -10,8 +10,8 @@ of the License, or (at your option) any later version.
 #ifndef AI_CAPTION_PLUGIN_BROWSER_CAPTION_SERVER_H
 #define AI_CAPTION_PLUGIN_BROWSER_CAPTION_SERVER_H
 
+#include "BrowserOverlaySettings.h"
 #include "CaptionResultHandler.h"
-#include "CaptionPluginSettings.h"
 
 #include <QByteArray>
 #include <QObject>

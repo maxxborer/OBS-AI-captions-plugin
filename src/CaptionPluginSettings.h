@@ -6,22 +6,8 @@
 #define AI_CAPTION_PLUGIN_SETTINGS_H
 
 
+#include "BrowserOverlaySettings.h"
 #include "SourceCaptioner.h"
-
-#include <cstdint>
-
-struct BrowserOverlaySettings {
-    std::uint16_t port = 0;
-    string access_token;
-
-    bool operator==(const BrowserOverlaySettings &rhs) const {
-        return port == rhs.port && access_token == rhs.access_token;
-    }
-
-    bool operator!=(const BrowserOverlaySettings &rhs) const {
-        return !(*this == rhs);
-    }
-};
 
 struct CaptionPluginSettings {
     bool enabled;

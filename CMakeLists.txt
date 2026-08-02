@@ -45,6 +45,7 @@ target_sources(
     src/caption_output_writer.h
     src/CaptionPluginManager.h
     src/BrowserCaptionServer.h
+    src/BrowserOverlaySettings.h
     src/resources/obs.qrc
 )
 
