@@ -26,7 +26,7 @@ jobs:
 
     steps:
       - name: Check out source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Read build metadata
         id: metadata
@@ -50,7 +50,7 @@ jobs:
           "dependency_key=$dependencyKey" >> $env:GITHUB_OUTPUT
 
       - name: Restore dependency downloads
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             .deps/*.zip
@@ -62,7 +62,7 @@ jobs:
         run: ./scripts/build-windows.ps1 -Configuration RelWithDebInfo
 
       - name: Upload Windows package
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: AI-Caption-Plugin-Windows-x64
           path: |
@@ -82,7 +82,7 @@ jobs:
 
     steps:
       - name: Download Windows package
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: AI-Caption-Plugin-Windows-x64
           path: release-assets
