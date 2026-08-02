@@ -14,19 +14,30 @@ permissions:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: true
 
 jobs:
   windows:
     name: Windows x64 / OBS 32.2.1
     runs-on: windows-2022
     timeout-minutes: 60
+    permissions:
+      contents: read
+      security-events: write
     outputs:
       version: ${{ steps.metadata.outputs.version }}
 
     steps:
       - name: Check out source
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@f205ea1c3313d32999d8d6a48b4f6530d4437b38 # v4
+        with:
+          languages: c-cpp
+          build-mode: manual
 
       - name: Read build metadata
         id: metadata
@@ -38,6 +49,9 @@ jobs:
           if (-not $sherpaVersion) {
             throw 'Unable to read the sherpa-onnx version.'
           }
+          if ($buildspec.version -notmatch '^\d+\.\d+\.\d+$') {
+            throw 'buildspec.json must contain a numeric semantic version.'
+          }
 
           $dependencyKey = @(
             $buildspec.dependencies.'obs-studio'.version
@@ -45,24 +59,32 @@ jobs:
             $buildspec.dependencies.qt6.version
             $sherpaVersion
           ) -join '-'
+          if ($dependencyKey -notmatch '^[A-Za-z0-9._-]+$') {
+            throw 'Dependency metadata contains unsafe cache-key characters.'
+          }
 
           "version=$($buildspec.version)" >> $env:GITHUB_OUTPUT
           "dependency_key=$dependencyKey" >> $env:GITHUB_OUTPUT
 
       - name: Restore dependency downloads
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: |
             .deps/*.zip
             build_x64/_deps/sherpa-onnx/*.tar.bz2
-          key: dependency-downloads-${{ runner.os }}-${{ runner.arch }}-${{ steps.metadata.outputs.dependency_key }}
+          key: dependency-downloads-${{ runner.os }}-${{ runner.arch }}-${{ steps.metadata.outputs.dependency_key }}-${{ hashFiles('buildspec.json', 'cmake/common/FindSherpaOnnx.cmake') }}
 
       - name: Build, test, and package
         shell: pwsh
         run: ./scripts/build-windows.ps1 -Configuration RelWithDebInfo
 
+      - name: Analyze with CodeQL
+        uses: github/codeql-action/analyze@f205ea1c3313d32999d8d6a48b4f6530d4437b38 # v4
+        with:
+          category: /language:c-cpp
+
       - name: Upload Windows package
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: AI-Caption-Plugin-Windows-x64
           path: |
@@ -82,7 +104,7 @@ jobs:
 
     steps:
       - name: Download Windows package
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: AI-Caption-Plugin-Windows-x64
           path: release-assets

@@ -72,6 +72,16 @@ install(
     installer/local-model.json
   DESTINATION "${CMAKE_PROJECT_NAME}"
 )
+install(
+  FILES
+    LICENSE
+    NOTICE.md
+    THIRD_PARTY_NOTICES.md
+    third_party/licenses/Apache-2.0.txt
+    third_party/licenses/MIT-onnxruntime.txt
+    src/resources/fonts/Geologica-OFL.txt
+  DESTINATION "${CMAKE_PROJECT_NAME}/licenses"
+)
 sherpa_onnx_copy_runtime(${CMAKE_PROJECT_NAME})
 
 include(CTest)
@@ -82,6 +92,12 @@ if(BUILD_TESTING)
       COMMAND
         pwsh.exe -NoLogo -NoProfile -File
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/installer_contract_test.ps1"
+    )
+    add_test(
+      NAME repository-contract
+      COMMAND
+        pwsh.exe -NoLogo -NoProfile -File
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/repository_contract_test.ps1"
     )
   endif()
 

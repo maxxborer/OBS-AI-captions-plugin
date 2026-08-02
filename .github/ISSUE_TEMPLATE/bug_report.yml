@@ -1,0 +1,46 @@
+name: Bug report
+description: Report a reproducible plugin or installer problem
+title: "bug: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Do not paste stream keys, protected Browser Source URLs, or captured speech.
+  - type: input
+    id: plugin-version
+    attributes:
+      label: Plugin version
+      placeholder: v0.40.0
+    validations:
+      required: true
+  - type: input
+    id: obs-version
+    attributes:
+      label: OBS and Windows versions
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Reproduction steps
+      placeholder: List the shortest exact sequence that reproduces the problem.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected and actual result
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Sanitized OBS log excerpt
+      description: Remove usernames, local paths, keys, URLs, and speech content.
+  - type: checkboxes
+    id: security
+    attributes:
+      label: Security check
+      options:
+        - label: This is not a security vulnerability; private reports follow SECURITY.md.
+          required: true

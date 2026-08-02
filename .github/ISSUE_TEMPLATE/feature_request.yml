@@ -1,0 +1,25 @@
+name: Feature request
+description: Propose a focused improvement to the local caption workflow
+title: "feat: "
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: Explain the concrete streaming or captioning problem.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+    validations:
+      required: true
+  - type: textarea
+    id: tradeoffs
+    attributes:
+      label: Latency, memory, privacy, and maintenance impact
+      description: Include measurements when proposing a model or dependency.
+    validations:
+      required: true
