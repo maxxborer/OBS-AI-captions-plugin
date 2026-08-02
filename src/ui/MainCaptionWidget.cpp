@@ -71,8 +71,8 @@ MainCaptionWidget::MainCaptionWidget(CaptionPluginManager &plugin_manager)
             [this](const CaptionPluginSettings &settings) {
                 caption_settings_widget.set_settings(settings);
                 caption_settings_widget.set_browser_urls(
-                        plugin_manager.browser_caption_server.overlay_url(),
-                        plugin_manager.browser_caption_server.designer_url());
+                        this->plugin_manager.browser_caption_server.overlay_url(),
+                        this->plugin_manager.browser_caption_server.designer_url());
             });
 }
 

@@ -20,6 +20,7 @@ foreach ($fragment in @(
     'persist-credentials: false',
     'github/codeql-action/init@',
     'github/codeql-action/analyze@',
+    'build-mode: none',
     'security-events: write',
     'cancel-in-progress: true',
     "hashFiles('buildspec.json', 'cmake/common/FindSherpaOnnx.cmake')"
