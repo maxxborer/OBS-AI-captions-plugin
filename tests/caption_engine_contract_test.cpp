@@ -1,9 +1,19 @@
-#include <cassert>
+#include <cstdlib>
+#include <iostream>
 #include <stdexcept>
 #include <string>
 
 #include "CaptionEngine.h"
 #include "SherpaTOneCaptionEngine.h"
+
+namespace {
+void require(bool condition, const char *message) {
+    if (!condition) {
+        std::cerr << message << std::endl;
+        std::exit(1);
+    }
+}
+}
 
 class FakeCaptionEngine final : public CaptionEngine {
 public:
@@ -28,9 +38,9 @@ int main() {
         interrupted = was_interrupted;
     });
 
-    assert(engine.queue_audio_data("test", 4));
-    assert(received == "test");
-    assert(!interrupted);
+    require(engine.queue_audio_data("test", 4), "Caption engine must accept audio");
+    require(received == "test", "Caption callback must receive the queued bytes");
+    require(!interrupted, "Caption callback must preserve the interruption flag");
 
     LocalCaptionEngineSettings missing_model;
     missing_model.model_directory = "this-model-directory-does-not-exist";
@@ -40,6 +50,6 @@ int main() {
     } catch (const std::runtime_error &) {
         rejected_missing_model = true;
     }
-    assert(rejected_missing_model);
+    require(rejected_missing_model, "Caption engine must reject a missing model");
     return 0;
 }

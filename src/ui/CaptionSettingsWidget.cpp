@@ -26,9 +26,6 @@
 #include <QVBoxLayout>
 
 namespace {
-constexpr auto kBrowserOverlayUrl = "http://127.0.0.1:37545/";
-constexpr auto kBrowserDesignerUrl = "http://127.0.0.1:37545/setup";
-
 QWidget *line_edit_with_button(QLineEdit *line_edit, QPushButton *button) {
     auto *row = new QWidget;
     auto *layout = new QHBoxLayout(row);
@@ -39,8 +36,13 @@ QWidget *line_edit_with_button(QLineEdit *line_edit, QPushButton *button) {
 }
 }
 
-CaptionSettingsWidget::CaptionSettingsWidget(const CaptionPluginSettings &latest_settings)
-        : QWidget(), current_settings(latest_settings) {
+CaptionSettingsWidget::CaptionSettingsWidget(
+        const CaptionPluginSettings &latest_settings,
+        const QString &overlay_url,
+        const QString &designer_url)
+        : QWidget(),
+          current_settings(latest_settings),
+          browser_designer_url(designer_url) {
     setWindowTitle(QStringLiteral("AI Captions"));
     setMinimumSize(660, 640);
     resize(720, 760);
@@ -164,18 +166,18 @@ CaptionSettingsWidget::CaptionSettingsWidget(const CaptionPluginSettings &latest
             QStringLiteral("Добавьте URL как Browser Source. Открытый источник сам включает распознавание и сразу получает новые слова."));
     browser_note->setWordWrap(true);
     browser_layout->addWidget(browser_note);
-    browser_url = new QLineEdit(QString::fromLatin1(kBrowserOverlayUrl));
+    browser_url = new QLineEdit(overlay_url);
     browser_url->setReadOnly(true);
-    auto *copy_button = new QPushButton(QStringLiteral("Копировать"));
-    browser_layout->addWidget(line_edit_with_button(browser_url, copy_button));
+    copy_browser_button = new QPushButton(QStringLiteral("Копировать"));
+    browser_layout->addWidget(line_edit_with_button(browser_url, copy_browser_button));
     auto *browser_actions = new QWidget;
     auto *browser_actions_layout = new QHBoxLayout(browser_actions);
     browser_actions_layout->setContentsMargins(0, 0, 0, 0);
-    auto *designer_button = new QPushButton(QStringLiteral("Настроить внешний вид"));
+    browser_designer_button = new QPushButton(QStringLiteral("Настроить внешний вид"));
     auto *preview_button = new QPushButton(QStringLiteral("Открыть живое превью"));
     copy_status = new QLabel;
     copy_status->setObjectName(QStringLiteral("captionSuccess"));
-    browser_actions_layout->addWidget(designer_button);
+    browser_actions_layout->addWidget(browser_designer_button);
     browser_actions_layout->addWidget(preview_button);
     browser_actions_layout->addWidget(copy_status);
     browser_actions_layout->addStretch();
@@ -228,8 +230,8 @@ CaptionSettingsWidget::CaptionSettingsWidget(const CaptionPluginSettings &latest
     connect(buttons, &QDialogButtonBox::accepted, this, &CaptionSettingsWidget::accept_current_settings);
     connect(buttons, &QDialogButtonBox::rejected, this, &CaptionSettingsWidget::hide);
     connect(folder_button, &QPushButton::clicked, this, &CaptionSettingsWidget::choose_file_output_folder);
-    connect(copy_button, &QPushButton::clicked, this, &CaptionSettingsWidget::copy_browser_url);
-    connect(designer_button, &QPushButton::clicked, this, &CaptionSettingsWidget::open_browser_designer);
+    connect(copy_browser_button, &QPushButton::clicked, this, &CaptionSettingsWidget::copy_browser_url);
+    connect(browser_designer_button, &QPushButton::clicked, this, &CaptionSettingsWidget::open_browser_designer);
     connect(preview_button, &QPushButton::clicked, this, &CaptionSettingsWidget::preview_requested);
     connect(caption_when_combo, qOverload<int>(&QComboBox::currentIndexChanged), this, &CaptionSettingsWidget::update_source_controls);
     connect(sources_combo, qOverload<int>(&QComboBox::currentIndexChanged), this, &CaptionSettingsWidget::update_source_controls);
@@ -237,6 +239,7 @@ CaptionSettingsWidget::CaptionSettingsWidget(const CaptionPluginSettings &latest
     connect(enabled_checkbox, &QCheckBox::toggled, this, &CaptionSettingsWidget::update_output_controls);
 
     update_ui();
+    set_browser_urls(overlay_url, designer_url);
 }
 
 void CaptionSettingsWidget::populate_audio_sources() {
@@ -376,7 +379,20 @@ void CaptionSettingsWidget::copy_browser_url() {
 }
 
 void CaptionSettingsWidget::open_browser_designer() {
-    QDesktopServices::openUrl(QUrl(QString::fromLatin1(kBrowserDesignerUrl)));
+    if (!browser_designer_url.isEmpty())
+        QDesktopServices::openUrl(QUrl(browser_designer_url));
+}
+
+void CaptionSettingsWidget::set_browser_urls(
+        const QString &overlay_url,
+        const QString &designer_url) {
+    browser_url->setText(overlay_url);
+    browser_designer_url = designer_url;
+    const bool available = !overlay_url.isEmpty() && !designer_url.isEmpty();
+    copy_browser_button->setEnabled(available);
+    browser_designer_button->setEnabled(available);
+    if (!available)
+        copy_status->setText(QStringLiteral("Локальный браузерный источник не запустился"));
 }
 
 void CaptionSettingsWidget::set_settings(const CaptionPluginSettings &new_settings) {

@@ -14,7 +14,10 @@
 MainCaptionWidget::MainCaptionWidget(CaptionPluginManager &plugin_manager)
         : QWidget(),
           plugin_manager(plugin_manager),
-          caption_settings_widget(plugin_manager.plugin_settings) {
+          caption_settings_widget(
+                  plugin_manager.plugin_settings,
+                  plugin_manager.browser_caption_server.overlay_url(),
+                  plugin_manager.browser_caption_server.designer_url()) {
     setWindowTitle(QStringLiteral("AI Captions — локальное превью"));
     setMinimumWidth(520);
 
@@ -33,6 +36,7 @@ MainCaptionWidget::MainCaptionWidget(CaptionPluginManager &plugin_manager)
     layout->addWidget(caption_text);
 
     status_text = new QLabel(QStringLiteral("Ожидание речи"));
+    status_text->setTextFormat(Qt::PlainText);
     status_text->setWordWrap(true);
     layout->addWidget(status_text);
 
@@ -54,19 +58,22 @@ MainCaptionWidget::MainCaptionWidget(CaptionPluginManager &plugin_manager)
             &plugin_manager.source_captioner,
             &SourceCaptioner::caption_result_received,
             this,
-            &MainCaptionWidget::handle_caption_data,
-            Qt::QueuedConnection);
+            &MainCaptionWidget::handle_caption_data);
     connect(
             &plugin_manager.source_captioner,
             &SourceCaptioner::source_capture_status_changed,
             this,
-            &MainCaptionWidget::handle_source_capture_status_change,
-            Qt::QueuedConnection);
+            &MainCaptionWidget::handle_source_capture_status_change);
     connect(
             &plugin_manager,
             &CaptionPluginManager::settings_changed,
-            &caption_settings_widget,
-            &CaptionSettingsWidget::set_settings);
+            this,
+            [this](const CaptionPluginSettings &settings) {
+                caption_settings_widget.set_settings(settings);
+                caption_settings_widget.set_browser_urls(
+                        plugin_manager.browser_caption_server.overlay_url(),
+                        plugin_manager.browser_caption_server.designer_url());
+            });
 }
 
 void MainCaptionWidget::showEvent(QShowEvent *event) {

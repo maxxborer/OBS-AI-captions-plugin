@@ -120,11 +120,11 @@ SourceAudioCaptureSession::SourceAudioCaptureSession(
 
 void SourceAudioCaptureSession::state_changed_check(bool always_signal) {
     audio_source_capture_status new_status = check_source_status();
-    if (!always_signal && new_status == capture_status)
+    if (!always_signal && new_status == capture_status.load(std::memory_order_acquire))
         return;
 
     debug_log("SourceAudioCaptureSession %d status changed %s %d", id, obs_source_get_name(muting_source), new_status);
-    capture_status = new_status;
+    capture_status.store(new_status, std::memory_order_release);
     {
         std::lock_guard<std::recursive_mutex> lock(on_status_cb_handle.mutex);
         if (on_status_cb_handle.callback_fn)
@@ -166,7 +166,7 @@ void SourceAudioCaptureSession::audio_capture_cb(obs_source_t *source, const str
     }
 
 
-    if (muted || capture_status != AUDIO_SOURCE_CAPTURING) {
+    if (muted || capture_status.load(std::memory_order_acquire) != AUDIO_SOURCE_CAPTURING) {
         if (muted_handling == MUTED_SOURCE_DISCARD_WHEN_MUTED)
             return;
 
@@ -243,5 +243,5 @@ SourceAudioCaptureSession::~SourceAudioCaptureSession() {
 }
 
 audio_source_capture_status SourceAudioCaptureSession::get_current_capture_status() {
-    return capture_status;
+    return capture_status.load(std::memory_order_acquire);
 }

@@ -14,6 +14,8 @@ of the License, or (at your option) any later version.
 #include "storage_utils.h"
 
 #include <QFileInfo>
+#include <QRandomGenerator>
+#include <QRegularExpression>
 
 #include <obs-module.h>
 
@@ -47,7 +49,21 @@ static SourceCaptionerSettings default_SourceCaptionerSettings() {
 }
 
 static CaptionPluginSettings default_CaptionPluginSettings() {
-    return CaptionPluginSettings(false, default_SourceCaptionerSettings());
+    return CaptionPluginSettings(false, default_SourceCaptionerSettings(), {});
+}
+
+static BrowserOverlaySettings new_browser_overlay_settings() {
+    BrowserOverlaySettings settings;
+    settings.port = static_cast<std::uint16_t>(
+            49152U + QRandomGenerator::system()->bounded(16383U));
+    QString token;
+    token.reserve(64);
+    for (int index = 0; index < 8; ++index) {
+        token += QString::number(QRandomGenerator::system()->generate(), 16)
+                         .rightJustified(8, QLatin1Char('0'));
+    }
+    settings.access_token = token.toStdString();
+    return settings;
 }
 
 static void enforce_settings(CaptionPluginSettings &settings) {
@@ -58,6 +74,13 @@ static void enforce_settings(CaptionPluginSettings &settings) {
         file.line_count = 3;
     const QString safe_name = QFileInfo(QString::fromStdString(file.filename_custom)).fileName();
     file.filename_custom = safe_name.isEmpty() ? "captions.txt" : safe_name.toStdString();
+
+    const QString token = QString::fromStdString(settings.browser_overlay.access_token);
+    static const QRegularExpression valid_token(QStringLiteral("^[0-9a-f]{64}$"));
+    if (settings.browser_overlay.port < 49152 ||
+        !valid_token.match(token).hasMatch()) {
+        settings.browser_overlay = new_browser_overlay_settings();
+    }
 }
 
 static CaptionPluginSettings get_CaptionPluginSettings_from_data(obs_data_t *load_data) {
@@ -77,6 +100,8 @@ static CaptionPluginSettings get_CaptionPluginSettings_from_data(obs_data_t *loa
     obs_data_set_default_bool(load_data, "file_output_enabled", file.enabled);
     obs_data_set_default_string(load_data, "file_output_folder", file.output_folder.c_str());
     obs_data_set_default_string(load_data, "file_output_filename_custom", file.filename_custom.c_str());
+    obs_data_set_default_int(load_data, "browser_overlay_port", 0);
+    obs_data_set_default_string(load_data, "browser_overlay_token", "");
 
     settings.enabled = obs_data_get_bool(load_data, "enabled");
     source.native_stream_output_enabled = obs_data_get_bool(load_data, "streaming_output_enabled");
@@ -87,6 +112,10 @@ static CaptionPluginSettings get_CaptionPluginSettings_from_data(obs_data_t *loa
     file.enabled = obs_data_get_bool(load_data, "file_output_enabled");
     file.output_folder = obs_data_get_string(load_data, "file_output_folder");
     file.filename_custom = obs_data_get_string(load_data, "file_output_filename_custom");
+    settings.browser_overlay.port = static_cast<std::uint16_t>(
+            obs_data_get_int(load_data, "browser_overlay_port"));
+    settings.browser_overlay.access_token =
+            obs_data_get_string(load_data, "browser_overlay_token");
 
     enforce_settings(settings);
     return settings;
@@ -108,6 +137,11 @@ static void set_CaptionPluginSettings_on_data(
     obs_data_set_bool(save_data, "file_output_enabled", file.enabled);
     obs_data_set_string(save_data, "file_output_folder", file.output_folder.c_str());
     obs_data_set_string(save_data, "file_output_filename_custom", file.filename_custom.c_str());
+    obs_data_set_int(save_data, "browser_overlay_port", settings.browser_overlay.port);
+    obs_data_set_string(
+            save_data,
+            "browser_overlay_token",
+            settings.browser_overlay.access_token.c_str());
     obs_data_set_string(save_data, "plugin_version", VERSION_STRING);
 }
 

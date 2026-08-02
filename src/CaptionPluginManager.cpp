@@ -6,7 +6,9 @@ CaptionPluginManager::CaptionPluginManager(const CaptionPluginSettings &initial_
         : plugin_settings(initial_settings),
           source_captioner(
                   initial_settings.source_cap_settings,
-                  false) {
+                  false),
+          browser_caption_server(initial_settings.browser_overlay) {
+    plugin_settings.browser_overlay = browser_caption_server.settings();
     QObject::connect(
             &source_captioner,
             &SourceCaptioner::caption_result_received,
@@ -19,9 +21,9 @@ CaptionPluginManager::CaptionPluginManager(const CaptionPluginSettings &initial_
             [this](bool) { update_settings(plugin_settings); });
 
     if (browser_caption_server.is_listening())
-        info_log("Browser caption overlay ready at %s", browser_caption_server.overlay_url().toUtf8().constData());
+        info_log("Browser caption overlay ready on a protected localhost endpoint");
     else
-        warn_log("Browser caption overlay could not listen on 127.0.0.1:%u", BrowserCaptionServer::port);
+        warn_log("Browser caption overlay could not listen on localhost");
 }
 
 void CaptionPluginManager::external_state_changed(
@@ -35,7 +37,12 @@ void CaptionPluginManager::external_state_changed(
 }
 
 void CaptionPluginManager::update_settings(const CaptionPluginSettings &new_settings) {
-    const SourceCaptionerSettings &source_settings = new_settings.source_cap_settings;
+    CaptionPluginSettings applied_settings = new_settings;
+    if (applied_settings.browser_overlay != plugin_settings.browser_overlay) {
+        applied_settings.browser_overlay =
+                browser_caption_server.configure(applied_settings.browser_overlay);
+    }
+    const SourceCaptionerSettings &source_settings = applied_settings.source_cap_settings;
     const string scene_collection_name = state.external_scene_collection_name;
 
     const bool streaming_consumer =
@@ -45,10 +52,10 @@ void CaptionPluginManager::update_settings(const CaptionPluginSettings &new_sett
     const bool browser_consumer =
             browser_caption_server.is_listening() && browser_caption_server.has_browser_consumer();
     const bool should_caption =
-            new_settings.enabled &&
+            applied_settings.enabled &&
             (streaming_consumer || preview_consumer || file_consumer || browser_consumer);
 
-    const bool settings_equal = new_settings == plugin_settings;
+    const bool settings_equal = applied_settings == plugin_settings;
     const bool was_captioning = state.is_captioning;
     const bool was_native_output_active =
             state.is_captioning && state.is_captioning_streaming;
@@ -66,7 +73,7 @@ void CaptionPluginManager::update_settings(const CaptionPluginSettings &new_sett
     }
 
     ++update_count;
-    plugin_settings = new_settings;
+    plugin_settings = applied_settings;
     state.is_captioning_streaming = streaming_consumer;
     state.is_captioning_preview = preview_consumer;
     state.is_captioning_file_output = file_consumer;
@@ -100,7 +107,7 @@ void CaptionPluginManager::update_settings(const CaptionPluginSettings &new_sett
             captioning_active);
 
     if (!settings_equal)
-        emit settings_changed(new_settings);
+        emit settings_changed(applied_settings);
 }
 
 CaptioningState CaptionPluginManager::captioning_state() const {

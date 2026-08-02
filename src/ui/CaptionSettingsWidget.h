@@ -3,6 +3,7 @@
 
 #include "../CaptionPluginSettings.h"
 
+#include <QString>
 #include <QWidget>
 
 class QCheckBox;
@@ -17,8 +18,12 @@ class CaptionSettingsWidget final : public QWidget {
 Q_OBJECT
 
 public:
-    explicit CaptionSettingsWidget(const CaptionPluginSettings &latest_settings);
+    explicit CaptionSettingsWidget(
+            const CaptionPluginSettings &latest_settings,
+            const QString &overlay_url,
+            const QString &designer_url);
     void set_settings(const CaptionPluginSettings &new_settings);
+    void set_browser_urls(const QString &overlay_url, const QString &designer_url);
 
 signals:
     void settings_accepted(CaptionPluginSettings new_settings);
@@ -46,6 +51,9 @@ private:
     QLineEdit *file_output_folder = nullptr;
     QLineEdit *file_output_filename = nullptr;
     QLineEdit *browser_url = nullptr;
+    QPushButton *copy_browser_button = nullptr;
+    QPushButton *browser_designer_button = nullptr;
+    QString browser_designer_url;
     QLabel *copy_status = nullptr;
     QLabel *validation_label = nullptr;
 

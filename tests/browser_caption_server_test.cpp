@@ -6,6 +6,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QTcpSocket>
+#include <QUrl>
 
 #include <chrono>
 #include <cstdlib>
@@ -20,9 +21,12 @@ void require(bool condition, const char *message) {
     }
 }
 
-QByteArray request_path(QCoreApplication &application, const QByteArray &path) {
+QByteArray request_path(
+        QCoreApplication &application,
+        quint16 port,
+        const QByteArray &path) {
     QTcpSocket client;
-    client.connectToHost(QStringLiteral("127.0.0.1"), BrowserCaptionServer::port);
+    client.connectToHost(QStringLiteral("127.0.0.1"), port);
     require(client.waitForConnected(1000), "Client must connect to the local overlay server");
     client.write("GET " + path + " HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n");
     require(client.waitForBytesWritten(1000), "Client must send an HTTP request");
@@ -43,6 +47,12 @@ QByteArray request_path(QCoreApplication &application, const QByteArray &path) {
 int main(int argc, char **argv) {
     QCoreApplication application(argc, argv);
 
+    BrowserOverlaySettings invalid_browser_settings;
+    invalid_browser_settings.access_token = "predictable";
+    BrowserCaptionServer invalid_server(invalid_browser_settings);
+    require(!invalid_server.is_listening(),
+            "Browser caption server must fail closed without a 256-bit token");
+
     const QByteArray json = BrowserCaptionServer::build_state_json(
             QString::fromUtf8("быстрые слова OBS"), false, 42);
     const QJsonObject state = QJsonDocument::fromJson(json).object();
@@ -60,7 +70,7 @@ int main(int argc, char **argv) {
     require(html.contains("index === words.length - 1") && html.contains("' active'"),
             "Overlay must mark the latest partial word as active");
     require(html.contains("textContent = word"), "Overlay must render recognized text without HTML injection");
-    require(html.contains("new EventSource('/events')"),
+    require(html.contains("new EventSource('events')"),
             "Overlay must receive captions immediately over one persistent connection");
     require(!html.contains("setInterval(refresh, 70)"),
             "Overlay must not poll the local server continuously");
@@ -68,7 +78,7 @@ int main(int argc, char **argv) {
             "A hidden Browser Source must close its event stream and release its recognition consumer");
     require(html.contains("--caption-font-size") && html.contains("--active-background"),
             "Overlay appearance must be customizable with Browser Source CSS variables");
-    require(html.contains("Geologica") && html.contains("/assets/geologica.ttf"),
+    require(html.contains("Geologica") && html.contains("assets/geologica.ttf"),
             "Overlay must use the bundled Geologica font by default");
     require(html.contains("#8b5cf6"), "Overlay must use the purple active-word preset by default");
     require(html.contains("colorParameter('activeBg'") && html.contains("parameters.get('font')"),
@@ -82,7 +92,10 @@ int main(int argc, char **argv) {
     require(designer.contains("value=\"#8b5cf6\"") && designer.contains("value=\"Geologica\""),
             "Designer must start with the requested purple and Geologica preset");
 
-    BrowserCaptionServer server;
+    BrowserOverlaySettings browser_settings;
+    browser_settings.port = 0;
+    browser_settings.access_token = std::string(64, 'a');
+    BrowserCaptionServer server(browser_settings);
     require(server.is_listening(), "Browser caption server must listen on localhost");
     require(!server.has_browser_consumer(),
             "Browser captions must stay idle until an overlay requests caption events");
@@ -93,18 +106,34 @@ int main(int argc, char **argv) {
             [&](bool active) {
                 consumer_activated = consumer_activated || active;
             });
-    require(server.overlay_url() == QStringLiteral("http://127.0.0.1:37545/"),
-            "Overlay URL must remain stable for the OBS Browser Source");
+    const BrowserOverlaySettings active_settings = server.settings();
+    require(active_settings.port != 0, "Overlay server must report its selected local port");
+    require(active_settings.access_token == browser_settings.access_token,
+            "Overlay server must preserve its unguessable access token");
+    const QUrl overlay_url(server.overlay_url());
+    require(overlay_url.port() == active_settings.port &&
+                    overlay_url.path() == QStringLiteral("/") +
+                            QString::fromStdString(browser_settings.access_token) + QStringLiteral("/"),
+            "Overlay URL must include its protected endpoint");
 
-    const QByteArray page_response = request_path(application, "/");
+    const QByteArray protected_root =
+            "/" + QByteArray::fromStdString(browser_settings.access_token) + "/";
+
+    const QByteArray unauthorized_response = request_path(application, active_settings.port, "/");
+    require(unauthorized_response.startsWith("HTTP/1.1 404 Not Found"),
+            "An untrusted local process must not discover the overlay endpoint");
+
+    const QByteArray page_response = request_path(application, active_settings.port, protected_root);
     require(page_response.startsWith("HTTP/1.1 200 OK"), "Overlay page must be available over HTTP");
     require(page_response.contains("AI Caption Plugin"), "Overlay HTTP response must contain the page");
 
-    const QByteArray designer_response = request_path(application, "/setup");
+    const QByteArray designer_response = request_path(
+            application, active_settings.port, protected_root + "setup");
     require(designer_response.startsWith("HTTP/1.1 200 OK"), "Visual designer must be available over HTTP");
     require(designer_response.contains("Скопировать URL"), "Designer HTTP response must contain its controls");
 
-    const QByteArray font_response = request_path(application, "/assets/geologica.ttf");
+    const QByteArray font_response = request_path(
+            application, active_settings.port, protected_root + "assets/geologica.ttf");
     require(font_response.startsWith("HTTP/1.1 200 OK"), "Bundled Geologica font must be available over HTTP");
     require(font_response.contains("font/ttf"), "Bundled Geologica font must use the font content type");
     require(font_response.contains("max-age=31536000, immutable"),
@@ -113,9 +142,11 @@ int main(int argc, char **argv) {
             "Opening the overlay, designer, or font must not start recognition without an event consumer");
 
     QTcpSocket event_client;
-    event_client.connectToHost(QStringLiteral("127.0.0.1"), BrowserCaptionServer::port);
+    event_client.connectToHost(QStringLiteral("127.0.0.1"), active_settings.port);
     require(event_client.waitForConnected(1000), "Event client must connect to the local overlay server");
-    event_client.write("GET /events HTTP/1.1\r\nHost: 127.0.0.1\r\nAccept: text/event-stream\r\n\r\n");
+    event_client.write(
+            "GET " + protected_root +
+            "events HTTP/1.1\r\nHost: 127.0.0.1\r\nAccept: text/event-stream\r\n\r\n");
     require(event_client.waitForBytesWritten(1000), "Event client must request the caption stream");
     QElapsedTimer event_timer;
     event_timer.start();
@@ -156,7 +187,8 @@ int main(int argc, char **argv) {
     require(!server.has_browser_consumer(),
             "Recognition must return to idle immediately after the event consumer disconnects");
 
-    const QByteArray removed_state_response = request_path(application, "/state");
+    const QByteArray removed_state_response = request_path(
+            application, active_settings.port, protected_root + "state");
     require(removed_state_response.startsWith("HTTP/1.1 404 Not Found"),
             "The removed polling endpoint must not remain as a compatibility path");
 

@@ -22,6 +22,7 @@ of the License, or (at your option) any later version.
 namespace {
 constexpr std::size_t kHistoryEntriesLowWatermark = 40;
 constexpr std::size_t kHistoryEntriesHighWatermark = 80;
+constexpr std::size_t kMaximumPendingCaptionResults = 32;
 }
 
 SourceCaptioner::SourceCaptioner(
@@ -32,12 +33,6 @@ SourceCaptioner::SourceCaptioner(
           last_caption_at(std::chrono::steady_clock::now()),
           last_caption_cleared(true) {
     QObject::connect(&timer, &QTimer::timeout, this, &SourceCaptioner::clear_output_timer_cb);
-    QObject::connect(
-            this,
-            &SourceCaptioner::received_caption_result,
-            this,
-            &SourceCaptioner::process_caption_result,
-            Qt::QueuedConnection);
     QObject::connect(
             this,
             &SourceCaptioner::audio_capture_status_changed,
@@ -314,6 +309,10 @@ void SourceCaptioner::reset_caption_state_unlocked() {
     last_caption_final = false;
     last_caption_at = std::chrono::steady_clock::now();
     last_caption_cleared = true;
+    {
+        std::lock_guard<std::mutex> lock(pending_caption_mutex);
+        pending_caption_results.clear();
+    }
 }
 
 void SourceCaptioner::clear_output_timer_cb() {
@@ -365,7 +364,58 @@ void SourceCaptioner::on_caption_text_callback(
         int id,
         const CaptionResult &caption_result,
         bool interrupted) {
-    emit received_caption_result(id, caption_result, interrupted);
+    bool schedule_dispatch = false;
+    {
+        std::lock_guard<std::mutex> lock(pending_caption_mutex);
+        PendingCaptionResult pending{id, caption_result, interrupted};
+        if (!caption_result.final &&
+            !pending_caption_results.empty() &&
+            !pending_caption_results.back().caption_result.final) {
+            pending_caption_results.back() = std::move(pending);
+        } else {
+            pending_caption_results.push_back(std::move(pending));
+        }
+        if (pending_caption_results.size() > kMaximumPendingCaptionResults)
+            pending_caption_results.pop_front();
+        if (!caption_dispatch_scheduled) {
+            caption_dispatch_scheduled = true;
+            schedule_dispatch = true;
+        }
+    }
+    if (schedule_dispatch) {
+        QMetaObject::invokeMethod(
+                this,
+                [this] { process_pending_caption_result(); },
+                Qt::QueuedConnection);
+    }
+}
+
+void SourceCaptioner::process_pending_caption_result() {
+    PendingCaptionResult pending{};
+    bool has_pending = false;
+    bool schedule_next = false;
+    {
+        std::lock_guard<std::mutex> lock(pending_caption_mutex);
+        if (!pending_caption_results.empty()) {
+            pending = std::move(pending_caption_results.front());
+            pending_caption_results.pop_front();
+            has_pending = true;
+        }
+        schedule_next = !pending_caption_results.empty();
+        caption_dispatch_scheduled = schedule_next;
+    }
+    if (has_pending) {
+        process_caption_result(
+                pending.id,
+                std::move(pending.caption_result),
+                pending.interrupted);
+    }
+    if (schedule_next) {
+        QMetaObject::invokeMethod(
+                this,
+                [this] { process_pending_caption_result(); },
+                Qt::QueuedConnection);
+    }
 }
 
 void SourceCaptioner::process_caption_result(

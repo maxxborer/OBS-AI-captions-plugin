@@ -14,11 +14,29 @@ of the License, or (at your option) any later version.
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QList>
+#include <QPointer>
 #include <QTcpSocket>
+#include <QTimer>
 
 namespace {
 constexpr int kMaximumRequestBytes = 16 * 1024;
 constexpr qint64 kMaximumPendingEventBytes = 64 * 1024;
+constexpr int kMaximumConnections = 16;
+constexpr int kMaximumEventClients = 8;
+constexpr int kRequestTimeoutMilliseconds = 5000;
+constexpr int kMaximumCaptionCharacters = 4096;
+
+bool valid_access_token(const QString &token) {
+    if (token.size() != 64)
+        return false;
+    for (const QChar character : token) {
+        if (!character.isDigit() &&
+            !(character >= QLatin1Char('a') && character <= QLatin1Char('f'))) {
+            return false;
+        }
+    }
+    return true;
+}
 
 QByteArray status_text(int status) {
     switch (status) {
@@ -28,15 +46,29 @@ QByteArray status_text(int status) {
             return "204 No Content";
         case 404:
             return "404 Not Found";
+        case 503:
+            return "503 Service Unavailable";
         default:
             return "400 Bad Request";
     }
 }
 }
 
-BrowserCaptionServer::BrowserCaptionServer(QObject *parent) : QObject(parent) {
+BrowserCaptionServer::BrowserCaptionServer(
+        const BrowserOverlaySettings &settings,
+        QObject *parent)
+        : QObject(parent),
+          access_token(QString::fromStdString(settings.access_token)) {
+    server.setMaxPendingConnections(kMaximumConnections);
     connect(&server, &QTcpServer::newConnection, this, &BrowserCaptionServer::accept_connections);
-    server.listen(QHostAddress::LocalHost, port);
+    if (valid_access_token(access_token))
+        listen(settings.port);
+}
+
+bool BrowserCaptionServer::listen(quint16 requested_port) {
+    if (server.listen(QHostAddress::LocalHost, requested_port))
+        return true;
+    return server.listen(QHostAddress::LocalHost, 0);
 }
 
 bool BrowserCaptionServer::is_listening() const {
@@ -47,8 +79,39 @@ bool BrowserCaptionServer::has_browser_consumer() const {
     return browser_consumer_active;
 }
 
+BrowserOverlaySettings BrowserCaptionServer::configure(
+        const BrowserOverlaySettings &settings) {
+    const QSet<QTcpSocket *> sockets = active_sockets;
+    for (QTcpSocket *socket : sockets)
+        socket->abort();
+    active_sockets.clear();
+    event_clients.clear();
+    update_browser_consumer_presence();
+    server.close();
+    access_token = QString::fromStdString(settings.access_token);
+    if (valid_access_token(access_token))
+        listen(settings.port);
+    return this->settings();
+}
+
 QString BrowserCaptionServer::overlay_url() const {
-    return QStringLiteral("http://127.0.0.1:%1/").arg(port);
+    if (!server.isListening())
+        return {};
+    return QStringLiteral("http://127.0.0.1:%1/%2/")
+            .arg(server.serverPort())
+            .arg(access_token);
+}
+
+QString BrowserCaptionServer::designer_url() const {
+    const QString overlay = overlay_url();
+    return overlay.isEmpty() ? QString() : overlay + QStringLiteral("setup");
+}
+
+BrowserOverlaySettings BrowserCaptionServer::settings() const {
+    BrowserOverlaySettings current;
+    current.port = server.isListening() ? server.serverPort() : 0;
+    current.access_token = access_token.toStdString();
+    return current;
 }
 
 void BrowserCaptionServer::update_browser_consumer_presence() {
@@ -67,7 +130,9 @@ void BrowserCaptionServer::update_caption(
         caption_text.clear();
         caption_final = true;
     } else {
-        caption_text = QString::fromStdString(caption->output_line).simplified();
+        caption_text = QString::fromStdString(caption->output_line)
+                               .simplified()
+                               .left(kMaximumCaptionCharacters);
         caption_final = caption->caption_result.final;
     }
     ++revision;
@@ -92,7 +157,7 @@ QByteArray BrowserCaptionServer::build_overlay_html() {
   <style>
     @font-face {
       font-family: "Geologica";
-      src: url("/assets/geologica.ttf") format("truetype");
+      src: url("assets/geologica.ttf") format("truetype");
       font-style: normal;
       font-weight: 100 900;
       font-display: swap;
@@ -226,7 +291,7 @@ QByteArray BrowserCaptionServer::build_overlay_html() {
     function connectEvents() {
       if (document.hidden || events)
         return;
-      events = new EventSource('/events');
+      events = new EventSource('events');
       events.onmessage = event => {
         try {
           consumeState(JSON.parse(event.data));
@@ -268,7 +333,7 @@ QByteArray BrowserCaptionServer::build_designer_html() {
   <style>
     @font-face {
       font-family: "Geologica";
-      src: url("/assets/geologica.ttf") format("truetype");
+      src: url("assets/geologica.ttf") format("truetype");
       font-style: normal;
       font-weight: 100 900;
       font-display: swap;
@@ -424,7 +489,9 @@ QByteArray BrowserCaptionServer::build_designer_html() {
     });
     if (fields.uppercase.checked)
       parameters.set('uppercase', '1');
-    url.value = `${location.origin}/?${parameters}`;
+    const overlay = new URL('.', location.href);
+    overlay.search = parameters.toString();
+    url.value = overlay.href;
     copied.textContent = '';
   }
 
@@ -450,14 +517,41 @@ void BrowserCaptionServer::accept_connections() {
         if (!socket)
             continue;
 
+        if (active_sockets.size() >= kMaximumConnections) {
+            socket->abort();
+            socket->deleteLater();
+            continue;
+        }
+
         socket->setParent(this);
+        active_sockets.insert(socket);
         connect(socket, &QTcpSocket::readyRead, this, [this, socket] { read_request(socket); });
         connect(socket, &QTcpSocket::disconnected, this, [this, socket] {
+            active_sockets.remove(socket);
             if (event_clients.remove(socket))
                 update_browser_consumer_presence();
             socket->deleteLater();
         });
+        QPointer<QTcpSocket> guarded_socket(socket);
+        QTimer::singleShot(kRequestTimeoutMilliseconds, socket, [guarded_socket] {
+            if (guarded_socket &&
+                !guarded_socket->property("captionEventStream").toBool()) {
+                guarded_socket->abort();
+            }
+        });
     }
+}
+
+bool BrowserCaptionServer::authorize_path(QByteArray &path) const {
+    const QByteArray prefix = "/" + access_token.toLatin1();
+    if (path == prefix) {
+        path = "/";
+        return true;
+    }
+    if (!path.startsWith(prefix + "/"))
+        return false;
+    path.remove(0, prefix.size());
+    return true;
 }
 
 void BrowserCaptionServer::read_request(QTcpSocket *socket) {
@@ -489,6 +583,11 @@ void BrowserCaptionServer::read_request(QTcpSocket *socket) {
     if (query_at >= 0)
         path.truncate(query_at);
 
+    if (!authorize_path(path)) {
+        send_response(socket, 404, "text/plain; charset=utf-8", "Not found");
+        return;
+    }
+
     if (path == "/" || path == "/index.html") {
         send_response(socket, 200, "text/html; charset=utf-8", build_overlay_html());
     } else if (path == "/setup" || path == "/designer") {
@@ -515,6 +614,10 @@ void BrowserCaptionServer::read_request(QTcpSocket *socket) {
 }
 
 void BrowserCaptionServer::start_event_stream(QTcpSocket *socket) {
+    if (event_clients.size() >= kMaximumEventClients) {
+        send_response(socket, 503, "text/plain; charset=utf-8", "Too many caption consumers");
+        return;
+    }
     socket->setProperty("captionEventStream", true);
     socket->setProperty("captionRequest", QByteArray());
     event_clients.insert(socket);
@@ -523,6 +626,7 @@ void BrowserCaptionServer::start_event_stream(QTcpSocket *socket) {
     response += "Content-Type: text/event-stream; charset=utf-8\r\n";
     response += "Cache-Control: no-cache, no-transform\r\n";
     response += "X-Content-Type-Options: nosniff\r\n";
+    response += "Referrer-Policy: no-referrer\r\n";
     response += "Connection: keep-alive\r\n\r\n";
     response += "retry: 1000\n\n";
     response += "data: " + build_state_json(caption_text, caption_final, revision) + "\n\n";
@@ -561,6 +665,11 @@ void BrowserCaptionServer::send_response(
             ? "Cache-Control: public, max-age=31536000, immutable\r\n"
             : "Cache-Control: no-store, no-cache, must-revalidate\r\n";
     response += "X-Content-Type-Options: nosniff\r\n";
+    response += "Referrer-Policy: no-referrer\r\n";
+    if (content_type.startsWith("text/html")) {
+        response += "Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; "
+                    "script-src 'unsafe-inline'; font-src 'self'; connect-src 'self'\r\n";
+    }
     response += "Connection: close\r\n\r\n";
     response += body;
     socket->write(response);

@@ -273,6 +273,15 @@ Q_OBJECT
     string last_caption_text;
     bool last_caption_final = false;
 
+    struct PendingCaptionResult {
+        int id;
+        CaptionResult caption_result;
+        bool interrupted;
+    };
+    std::mutex pending_caption_mutex;
+    std::deque<PendingCaptionResult> pending_caption_results;
+    bool caption_dispatch_scheduled = false;
+
     void caption_was_output();
     void store_result(shared_ptr<OutputCaptionResult> output_result);
     void on_audio_data_callback(int id, const uint8_t *data, size_t size);
@@ -281,6 +290,7 @@ Q_OBJECT
             int id,
             const CaptionResult &caption_result,
             bool interrupted);
+    void process_pending_caption_result();
     bool _start_caption_stream();
     void reset_caption_state_unlocked();
 
@@ -293,10 +303,6 @@ private slots:
     void process_audio_capture_status_change(int id, int new_status);
 
 signals:
-    void received_caption_result(
-            int id,
-            const CaptionResult caption_result,
-            bool interrupted);
     void caption_result_received(
             shared_ptr<OutputCaptionResult> caption,
             bool cleared);

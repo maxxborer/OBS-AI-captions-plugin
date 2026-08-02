@@ -22,6 +22,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include <obs-frontend-api.h>
 #include <media-io/audio-resampler.h>
 #include <obs.hpp>
+#include <atomic>
 #include <functional>
 #include <mutex>
 #include <vector>
@@ -34,7 +35,7 @@ class SourceAudioCaptureSession {
     source_capture_config muted_handling;
 
     audio_resampler_t *resampler = nullptr;
-    audio_source_capture_status capture_status;
+    std::atomic<audio_source_capture_status> capture_status{AUDIO_SOURCE_NOT_STREAMED};
     bool use_muting_cb_signal = true;
     const int id;
     const size_t bytes_per_channel;

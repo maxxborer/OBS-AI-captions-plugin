@@ -11,6 +11,7 @@ of the License, or (at your option) any later version.
 #define AI_CAPTION_PLUGIN_BROWSER_CAPTION_SERVER_H
 
 #include "CaptionResultHandler.h"
+#include "CaptionPluginSettings.h"
 
 #include <QByteArray>
 #include <QObject>
@@ -27,13 +28,16 @@ class BrowserCaptionServer final : public QObject {
 Q_OBJECT
 
 public:
-    static constexpr quint16 port = 37545;
-
-    explicit BrowserCaptionServer(QObject *parent = nullptr);
+    explicit BrowserCaptionServer(
+            const BrowserOverlaySettings &settings,
+            QObject *parent = nullptr);
 
     bool is_listening() const;
     bool has_browser_consumer() const;
+    BrowserOverlaySettings configure(const BrowserOverlaySettings &settings);
     QString overlay_url() const;
+    QString designer_url() const;
+    BrowserOverlaySettings settings() const;
 
     void update_caption(
             const std::shared_ptr<OutputCaptionResult> &caption,
@@ -48,14 +52,18 @@ signals:
 
 private:
     QTcpServer server;
+    QSet<QTcpSocket *> active_sockets;
     QSet<QTcpSocket *> event_clients;
+    QString access_token;
     bool browser_consumer_active = false;
     QString caption_text;
     bool caption_final = true;
     std::uint64_t revision = 0;
 
     void accept_connections();
+    bool listen(quint16 requested_port);
     void update_browser_consumer_presence();
+    bool authorize_path(QByteArray &path) const;
     void read_request(QTcpSocket *socket);
     void start_event_stream(QTcpSocket *socket);
     void broadcast_state();

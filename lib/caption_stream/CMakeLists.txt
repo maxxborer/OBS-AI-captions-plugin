@@ -15,7 +15,7 @@ add_library(
 )
 
 target_include_directories(caption_stream PUBLIC ./)
-target_link_libraries(caption_stream PUBLIC SherpaOnnx::CAPI)
+target_link_libraries(caption_stream PUBLIC SherpaOnnx::CAPI PRIVATE bcrypt)
 
 if(UNIX AND NOT APPLE)
   target_compile_options(caption_stream PRIVATE "-fPIC")
