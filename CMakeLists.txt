@@ -160,16 +160,28 @@ if(BUILD_TESTING)
     PRIVATE VERSION_STRING="${PROJECT_VERSION}"
   )
   target_link_libraries(caption-settings-storage-test PRIVATE Qt6::Core OBS::libobs)
-  add_custom_command(
-    TARGET caption-settings-storage-test
-    POST_BUILD
-    COMMAND
-      ${CMAKE_COMMAND} -E copy_if_different
-      $<TARGET_RUNTIME_DLLS:caption-settings-storage-test>
-      $<TARGET_FILE_DIR:caption-settings-storage-test>
-    COMMAND_EXPAND_LISTS
-  )
   add_test(NAME caption-settings-storage COMMAND caption-settings-storage-test)
+  if(WIN32)
+    add_custom_command(
+      TARGET caption-settings-storage-test
+      POST_BUILD
+      COMMAND
+        ${CMAKE_COMMAND} -E copy_if_different
+        $<TARGET_RUNTIME_DLLS:caption-settings-storage-test>
+        $<TARGET_FILE_DIR:caption-settings-storage-test>
+      COMMAND_EXPAND_LISTS
+    )
+    set(caption_test_runtime_modifications)
+    foreach(prefix IN LISTS CMAKE_PREFIX_PATH)
+      if(EXISTS "${prefix}/bin")
+        list(APPEND caption_test_runtime_modifications "PATH=path_list_prepend:${prefix}/bin")
+      endif()
+    endforeach()
+    set_tests_properties(
+      caption-settings-storage
+      PROPERTIES ENVIRONMENT_MODIFICATION "${caption_test_runtime_modifications}"
+    )
+  endif()
 
   add_executable(
     browser-caption-server-test
