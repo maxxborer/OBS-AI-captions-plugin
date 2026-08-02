@@ -138,7 +138,8 @@ std::shared_ptr<OutputCaptionResult> CaptionResultHandler::prepare_caption_outpu
         bool interrupted,
         const std::deque<std::shared_ptr<OutputCaptionResult>> &result_history) {
     auto output = std::make_shared<OutputCaptionResult>(caption_result, interrupted);
-    output->clean_caption_text = restore_common_english_terms(caption_result.caption_text);
+    output->clean_caption_text = restore_common_english_terms(
+            text_replacer.replace(caption_result.caption_text));
     lstrip(output->clean_caption_text);
     if (!contains_only_russian_english_characters(output->clean_caption_text))
         return nullptr;

@@ -47,6 +47,12 @@ QByteArray request_path(
 int main(int argc, char **argv) {
     QCoreApplication application(argc, argv);
 
+    const BrowserOverlaySettings generated_browser_settings = new_browser_overlay_settings();
+    require(generated_browser_settings.port >= 49152,
+            "Fresh settings must reserve a private dynamic browser port");
+    require(generated_browser_settings.access_token.size() == 64,
+            "Fresh settings must contain a 256-bit browser access token");
+
     BrowserOverlaySettings invalid_browser_settings;
     invalid_browser_settings.access_token = "predictable";
     BrowserCaptionServer invalid_server(invalid_browser_settings);

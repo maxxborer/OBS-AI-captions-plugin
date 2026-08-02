@@ -1,6 +1,7 @@
 #ifndef AI_CAPTION_PLUGIN_CAPTION_FILE_WRITER_H
 #define AI_CAPTION_PLUGIN_CAPTION_FILE_WRITER_H
 
+#include "CaptionFileName.h"
 #include "SourceCaptioner.h"
 #include "log.c"
 
@@ -18,8 +19,10 @@ static void file_output_writer_loop(
         return;
     }
 
-    const QString output_path = QDir(output_directory.absoluteFilePath()).absoluteFilePath(
+    const QString output_filename = format_caption_filename(
             QString::fromStdString(control->arg.filename_custom));
+    const QString output_path = QDir(output_directory.absoluteFilePath()).absoluteFilePath(
+            output_filename);
     CaptionOutput caption_output;
     std::string previous_line;
     bool has_previous_line = false;

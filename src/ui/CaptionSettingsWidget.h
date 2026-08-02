@@ -12,6 +12,7 @@ class QLabel;
 class QLineEdit;
 class QPushButton;
 class QShowEvent;
+class QTableWidget;
 class QWidget;
 
 class CaptionSettingsWidget final : public QWidget {
@@ -34,6 +35,8 @@ private slots:
     void choose_file_output_folder();
     void copy_browser_url();
     void open_browser_designer();
+    void add_text_replacement();
+    void update_filename_preview();
     void update_source_controls();
     void update_output_controls();
 
@@ -50,6 +53,8 @@ private:
     QWidget *file_output_controls = nullptr;
     QLineEdit *file_output_folder = nullptr;
     QLineEdit *file_output_filename = nullptr;
+    QLabel *file_output_filename_preview = nullptr;
+    QTableWidget *text_replacements = nullptr;
     QLineEdit *browser_url = nullptr;
     QPushButton *copy_browser_button = nullptr;
     QPushButton *browser_designer_button = nullptr;
@@ -58,6 +63,8 @@ private:
     QLabel *validation_label = nullptr;
 
     void populate_audio_sources();
+    void populate_text_replacements();
+    void append_text_replacement_row(const TextReplacement &replacement);
     void update_ui();
     void show_validation_error(const QString &message, QWidget *field);
     void showEvent(QShowEvent *event) override;

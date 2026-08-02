@@ -11,15 +11,18 @@ of the License, or (at your option) any later version.
 *******************************************************************************/
 
 #include "CaptionPluginSettings.h"
+#include "CaptionFileName.h"
+#include "EnglishTermReplacements.h"
 #include "storage_utils.h"
 
 #include <QFileInfo>
-#include <QRandomGenerator>
 #include <QRegularExpression>
+#include <QStringList>
 
 #include <obs-module.h>
 
 constexpr auto kSettingsSaveEntryName = "ai_caption_plugin";
+constexpr auto kLegacySettingsSaveEntryName = "cloud_closed_caption_rat";
 
 static CaptionFormatSettings default_CaptionFormatSettings() {
     return {
@@ -49,21 +52,80 @@ static SourceCaptionerSettings default_SourceCaptionerSettings() {
 }
 
 static CaptionPluginSettings default_CaptionPluginSettings() {
-    return CaptionPluginSettings(false, default_SourceCaptionerSettings(), {});
+    return CaptionPluginSettings(
+            false,
+            default_SourceCaptionerSettings(),
+            new_browser_overlay_settings());
 }
 
-static BrowserOverlaySettings new_browser_overlay_settings() {
-    BrowserOverlaySettings settings;
-    settings.port = static_cast<std::uint16_t>(
-            49152U + QRandomGenerator::system()->bounded(16383U));
-    QString token;
-    token.reserve(64);
-    for (int index = 0; index < 8; ++index) {
-        token += QString::number(QRandomGenerator::system()->generate(), 16)
-                         .rightJustified(8, QLatin1Char('0'));
+static std::vector<TextReplacement> get_TextReplacements(obs_data_t *load_data) {
+    std::vector<TextReplacement> replacements;
+    if (!load_data)
+        return replacements;
+
+    obs_data_array_t *array = obs_data_get_array(load_data, "word_replacements");
+    if (!array)
+        return replacements;
+    const size_t count = std::min(
+            obs_data_array_count(array),
+            static_cast<size_t>(kMaximumTextReplacements));
+    replacements.reserve(count);
+    for (size_t index = 0; index < count; ++index) {
+        obs_data_t *item = obs_data_array_item(array, index);
+        if (!item)
+            continue;
+        TextReplacement replacement{
+                obs_data_get_string(item, "type"),
+                obs_data_get_string(item, "from"),
+                obs_data_get_string(item, "to")};
+        if (text_replacement_is_valid(replacement))
+            replacements.push_back(std::move(replacement));
+        obs_data_release(item);
     }
-    settings.access_token = token.toStdString();
-    return settings;
+    obs_data_array_release(array);
+    return replacements;
+}
+
+static void set_TextReplacements(
+        obs_data_t *save_data,
+        const std::vector<TextReplacement> &input) {
+    obs_data_array_t *array = obs_data_array_create();
+    for (const TextReplacement &replacement : normalized_text_replacements(input)) {
+        obs_data_t *item = obs_data_create();
+        obs_data_set_string(item, "type", replacement.type.c_str());
+        obs_data_set_string(item, "from", replacement.from.c_str());
+        obs_data_set_string(item, "to", replacement.to.c_str());
+        obs_data_array_push_back(array, item);
+        obs_data_release(item);
+    }
+    obs_data_set_array(save_data, "word_replacements", array);
+    obs_data_array_release(array);
+}
+
+static std::vector<TextReplacement> get_legacy_text_replacements(obs_data_t *legacy_data) {
+    std::vector<TextReplacement> replacements = get_TextReplacements(legacy_data);
+    replacements.erase(
+            std::remove_if(
+                    replacements.begin(),
+                    replacements.end(),
+                    is_builtin_english_term_replacement),
+            replacements.end());
+    if (!replacements.empty() || !legacy_data)
+        return replacements;
+
+    const QString banned_words = QString::fromUtf8(
+            obs_data_get_string(legacy_data, "manual_banned_words"));
+    for (const QString &word : banned_words.split(
+                 QRegularExpression(QStringLiteral("\\s+")),
+                 Qt::SkipEmptyParts)) {
+        replacements.push_back(TextReplacement{
+                "text_case_insensitive",
+                word.toStdString(),
+                ""});
+        if (replacements.size() >= kMaximumTextReplacements)
+            break;
+    }
+    return normalized_text_replacements(replacements);
 }
 
 static void enforce_settings(CaptionPluginSettings &settings) {
@@ -72,8 +134,12 @@ static void enforce_settings(CaptionPluginSettings &settings) {
         file.line_length = 32;
     if (file.line_count == 0 || file.line_count > 6)
         file.line_count = 3;
-    const QString safe_name = QFileInfo(QString::fromStdString(file.filename_custom)).fileName();
-    file.filename_custom = safe_name.isEmpty() ? "captions.txt" : safe_name.toStdString();
+    file.filename_custom = sanitize_caption_filename_template(
+                                   QString::fromStdString(file.filename_custom))
+                                   .toStdString();
+    settings.source_cap_settings.format_settings.text_replacements =
+            normalized_text_replacements(
+                    settings.source_cap_settings.format_settings.text_replacements);
 
     const QString token = QString::fromStdString(settings.browser_overlay.access_token);
     static const QRegularExpression valid_token(QStringLiteral("^[0-9a-f]{64}$"));
@@ -102,6 +168,7 @@ static CaptionPluginSettings get_CaptionPluginSettings_from_data(obs_data_t *loa
     obs_data_set_default_string(load_data, "file_output_filename_custom", file.filename_custom.c_str());
     obs_data_set_default_int(load_data, "browser_overlay_port", 0);
     obs_data_set_default_string(load_data, "browser_overlay_token", "");
+    obs_data_set_default_bool(load_data, "legacy_word_replacements_migrated", false);
 
     settings.enabled = obs_data_get_bool(load_data, "enabled");
     source.native_stream_output_enabled = obs_data_get_bool(load_data, "streaming_output_enabled");
@@ -112,6 +179,7 @@ static CaptionPluginSettings get_CaptionPluginSettings_from_data(obs_data_t *loa
     file.enabled = obs_data_get_bool(load_data, "file_output_enabled");
     file.output_folder = obs_data_get_string(load_data, "file_output_folder");
     file.filename_custom = obs_data_get_string(load_data, "file_output_filename_custom");
+    source.format_settings.text_replacements = get_TextReplacements(load_data);
     settings.browser_overlay.port = static_cast<std::uint16_t>(
             obs_data_get_int(load_data, "browser_overlay_port"));
     settings.browser_overlay.access_token =
@@ -137,6 +205,8 @@ static void set_CaptionPluginSettings_on_data(
     obs_data_set_bool(save_data, "file_output_enabled", file.enabled);
     obs_data_set_string(save_data, "file_output_folder", file.output_folder.c_str());
     obs_data_set_string(save_data, "file_output_filename_custom", file.filename_custom.c_str());
+    set_TextReplacements(save_data, source.format_settings.text_replacements);
+    obs_data_set_bool(save_data, "legacy_word_replacements_migrated", true);
     obs_data_set_int(save_data, "browser_overlay_port", settings.browser_overlay.port);
     obs_data_set_string(
             save_data,
@@ -148,6 +218,18 @@ static void set_CaptionPluginSettings_on_data(
 static CaptionPluginSettings load_CaptionPluginSettings(obs_data_t *load_data) {
     obs_data_t *object = obs_data_get_obj(load_data, kSettingsSaveEntryName);
     CaptionPluginSettings settings = get_CaptionPluginSettings_from_data(object);
+    const bool replacements_migrated =
+            object && obs_data_get_bool(object, "legacy_word_replacements_migrated");
+    if (!replacements_migrated &&
+        settings.source_cap_settings.format_settings.text_replacements.empty()) {
+        obs_data_t *legacy_object = obs_data_get_obj(
+                load_data,
+                kLegacySettingsSaveEntryName);
+        settings.source_cap_settings.format_settings.text_replacements =
+                get_legacy_text_replacements(legacy_object);
+        obs_data_release(legacy_object);
+    }
+    enforce_settings(settings);
     obs_data_release(object);
     return settings;
 }

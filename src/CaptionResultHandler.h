@@ -1,6 +1,8 @@
 #ifndef AI_CAPTION_PLUGIN_CAPTION_RESULT_HANDLER_H
 #define AI_CAPTION_PLUGIN_CAPTION_RESULT_HANDLER_H
 
+#include "TextReplacements.h"
+
 #include <CaptionResult.h>
 
 #include <deque>
@@ -18,6 +20,7 @@ struct CaptionFormatSettings {
     bool caption_insert_punctuation;
     bool caption_timeout_enabled;
     double caption_timeout_seconds;
+    std::vector<TextReplacement> text_replacements;
 
     bool operator==(const CaptionFormatSettings &rhs) const {
         return caption_line_length == rhs.caption_line_length &&
@@ -25,7 +28,8 @@ struct CaptionFormatSettings {
                caption_insert_newlines == rhs.caption_insert_newlines &&
                caption_insert_punctuation == rhs.caption_insert_punctuation &&
                caption_timeout_enabled == rhs.caption_timeout_enabled &&
-               caption_timeout_seconds == rhs.caption_timeout_seconds;
+               caption_timeout_seconds == rhs.caption_timeout_seconds &&
+               text_replacements == rhs.text_replacements;
     }
 
     bool operator!=(const CaptionFormatSettings &rhs) const {
@@ -47,7 +51,8 @@ struct OutputCaptionResult {
 class CaptionResultHandler {
 public:
     explicit CaptionResultHandler(CaptionFormatSettings settings)
-            : settings(std::move(settings)) {}
+            : settings(std::move(settings)),
+              text_replacer(this->settings.text_replacements) {}
 
     std::shared_ptr<OutputCaptionResult> prepare_caption_output(
             const CaptionResult &caption_result,
@@ -61,6 +66,7 @@ public:
 
 private:
     CaptionFormatSettings settings;
+    TextReplacer text_replacer;
 };
 
 #endif // AI_CAPTION_PLUGIN_CAPTION_RESULT_HANDLER_H

@@ -99,6 +99,9 @@ void MainCaptionWidget::show_self() {
 
 void MainCaptionWidget::show_settings_dialog() {
     caption_settings_widget.set_settings(plugin_manager.plugin_settings);
+    caption_settings_widget.set_browser_urls(
+            plugin_manager.browser_caption_server.overlay_url(),
+            plugin_manager.browser_caption_server.designer_url());
     caption_settings_widget.show();
     caption_settings_widget.raise();
     caption_settings_widget.activateWindow();

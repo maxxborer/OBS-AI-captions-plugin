@@ -1,10 +1,12 @@
 #include "CaptionSettingsWidget.h"
 
 #include "uiutils.h"
+#include "../CaptionFileName.h"
 #include "../data.h"
 #include "../storage_utils.h"
 
 #include <QApplication>
+#include <QAbstractItemView>
 #include <QCheckBox>
 #include <QClipboard>
 #include <QComboBox>
@@ -15,12 +17,15 @@
 #include <QFrame>
 #include <QFormLayout>
 #include <QGroupBox>
+#include <QHeaderView>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QLineEdit>
 #include <QPushButton>
 #include <QScrollArea>
 #include <QShowEvent>
+#include <QTableWidget>
+#include <QTableWidgetItem>
 #include <QTimer>
 #include <QUrl>
 #include <QVBoxLayout>
@@ -167,13 +172,16 @@ CaptionSettingsWidget::CaptionSettingsWidget(
     browser_note->setWordWrap(true);
     browser_layout->addWidget(browser_note);
     browser_url = new QLineEdit(overlay_url);
+    browser_url->setObjectName(QStringLiteral("browserOverlayUrl"));
     browser_url->setReadOnly(true);
     copy_browser_button = new QPushButton(QStringLiteral("Копировать"));
+    copy_browser_button->setObjectName(QStringLiteral("copyBrowserOverlayUrl"));
     browser_layout->addWidget(line_edit_with_button(browser_url, copy_browser_button));
     auto *browser_actions = new QWidget;
     auto *browser_actions_layout = new QHBoxLayout(browser_actions);
     browser_actions_layout->setContentsMargins(0, 0, 0, 0);
     browser_designer_button = new QPushButton(QStringLiteral("Настроить внешний вид"));
+    browser_designer_button->setObjectName(QStringLiteral("openBrowserOverlayDesigner"));
     auto *preview_button = new QPushButton(QStringLiteral("Открыть живое превью"));
     copy_status = new QLabel;
     copy_status->setObjectName(QStringLiteral("captionSuccess"));
@@ -184,7 +192,34 @@ CaptionSettingsWidget::CaptionSettingsWidget(
     browser_layout->addWidget(browser_actions);
     page_layout->addWidget(browser_group);
 
-    auto *file_group = new QGroupBox(QStringLiteral("3 · Дополнительный вывод"));
+    auto *replacement_group = new QGroupBox(QStringLiteral("3 · Автозамена текста"));
+    auto *replacement_layout = new QVBoxLayout(replacement_group);
+    auto *replacement_hint = new QLabel(QStringLiteral(
+            "Правила применяются ко всем выходам. Например: «блять» → «***». Пустая замена удаляет найденный текст."));
+    replacement_hint->setObjectName(QStringLiteral("captionHint"));
+    replacement_hint->setWordWrap(true);
+    replacement_layout->addWidget(replacement_hint);
+    text_replacements = new QTableWidget(0, 4);
+    text_replacements->setObjectName(QStringLiteral("textReplacements"));
+    text_replacements->setHorizontalHeaderLabels({
+            QStringLiteral("Как искать"),
+            QStringLiteral("Заменить"),
+            QStringLiteral("На что"),
+            QString()});
+    text_replacements->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
+    text_replacements->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
+    text_replacements->horizontalHeader()->setSectionResizeMode(2, QHeaderView::Stretch);
+    text_replacements->horizontalHeader()->setSectionResizeMode(3, QHeaderView::Fixed);
+    text_replacements->setColumnWidth(3, 38);
+    text_replacements->setMinimumHeight(170);
+    text_replacements->setAlternatingRowColors(true);
+    text_replacements->setSelectionBehavior(QAbstractItemView::SelectRows);
+    replacement_layout->addWidget(text_replacements);
+    auto *add_replacement_button = new QPushButton(QStringLiteral("+ Добавить правило"));
+    replacement_layout->addWidget(add_replacement_button, 0, Qt::AlignLeft);
+    page_layout->addWidget(replacement_group);
+
+    auto *file_group = new QGroupBox(QStringLiteral("4 · Дополнительный вывод"));
     auto *file_layout = new QVBoxLayout(file_group);
     file_output_checkbox = new QCheckBox(QStringLiteral("Обновлять текстовый файл с текущими субтитрами"));
     file_layout->addWidget(file_output_checkbox);
@@ -194,11 +229,22 @@ CaptionSettingsWidget::CaptionSettingsWidget(
     file_output_folder = new QLineEdit;
     auto *folder_button = new QPushButton(QStringLiteral("Выбрать…"));
     file_output_filename = new QLineEdit;
-    file_output_filename->setPlaceholderText(QStringLiteral("captions.txt"));
+    file_output_filename->setObjectName(QStringLiteral("captionFilenameTemplate"));
+    file_output_filename->setPlaceholderText(
+            QStringLiteral("captions_%CCYY-%MM-%DD_%hh-%mm-%ss.txt"));
     file_form->addRow(
             QStringLiteral("Папка"),
             line_edit_with_button(file_output_folder, folder_button));
-    file_form->addRow(QStringLiteral("Имя файла"), file_output_filename);
+    file_form->addRow(QStringLiteral("Имя / шаблон"), file_output_filename);
+    auto *filename_tokens = new QLabel(QStringLiteral(
+            "Дата и время как в OBS: %CCYY — год, %MM — месяц, %DD — день, %hh — часы, %mm — минуты, %ss — секунды."));
+    filename_tokens->setObjectName(QStringLiteral("captionHint"));
+    filename_tokens->setWordWrap(true);
+    file_form->addRow(QString(), filename_tokens);
+    file_output_filename_preview = new QLabel;
+    file_output_filename_preview->setObjectName(QStringLiteral("captionHint"));
+    file_output_filename_preview->setTextFormat(Qt::PlainText);
+    file_form->addRow(QString(), file_output_filename_preview);
     file_layout->addWidget(file_output_controls);
 
     stream_output_checkbox = new QCheckBox(
@@ -233,6 +279,8 @@ CaptionSettingsWidget::CaptionSettingsWidget(
     connect(copy_browser_button, &QPushButton::clicked, this, &CaptionSettingsWidget::copy_browser_url);
     connect(browser_designer_button, &QPushButton::clicked, this, &CaptionSettingsWidget::open_browser_designer);
     connect(preview_button, &QPushButton::clicked, this, &CaptionSettingsWidget::preview_requested);
+    connect(add_replacement_button, &QPushButton::clicked, this, &CaptionSettingsWidget::add_text_replacement);
+    connect(file_output_filename, &QLineEdit::textChanged, this, &CaptionSettingsWidget::update_filename_preview);
     connect(caption_when_combo, qOverload<int>(&QComboBox::currentIndexChanged), this, &CaptionSettingsWidget::update_source_controls);
     connect(sources_combo, qOverload<int>(&QComboBox::currentIndexChanged), this, &CaptionSettingsWidget::update_source_controls);
     connect(file_output_checkbox, &QCheckBox::toggled, this, &CaptionSettingsWidget::update_output_controls);
@@ -283,10 +331,73 @@ void CaptionSettingsWidget::update_ui() {
     file_output_checkbox->setChecked(source.file_output_settings.enabled);
     file_output_folder->setText(QString::fromStdString(source.file_output_settings.output_folder));
     file_output_filename->setText(QString::fromStdString(source.file_output_settings.filename_custom));
+    populate_text_replacements();
     validation_label->hide();
     copy_status->clear();
     update_source_controls();
     update_output_controls();
+    update_filename_preview();
+}
+
+void CaptionSettingsWidget::append_text_replacement_row(
+        const TextReplacement &replacement) {
+    if (text_replacements->rowCount() >= static_cast<int>(kMaximumTextReplacements))
+        return;
+
+    const int row = text_replacements->rowCount();
+    text_replacements->insertRow(row);
+    auto *type = new QComboBox;
+    type->addItem(QStringLiteral("Слово целиком"), QStringLiteral("whole_word_case_insensitive"));
+    type->addItem(QStringLiteral("Фрагмент · без регистра"), QStringLiteral("text_case_insensitive"));
+    type->addItem(QStringLiteral("Фрагмент · с регистром"), QStringLiteral("text_case_sensitive"));
+    type->addItem(QStringLiteral("Regex · без регистра"), QStringLiteral("regex_case_insensitive"));
+    type->addItem(QStringLiteral("Regex · с регистром"), QStringLiteral("regex_case_sensitive"));
+    const int type_index = type->findData(QString::fromStdString(replacement.type));
+    type->setCurrentIndex(type_index >= 0 ? type_index : 0);
+    text_replacements->setCellWidget(row, 0, type);
+    text_replacements->setItem(
+            row,
+            1,
+            new QTableWidgetItem(QString::fromStdString(replacement.from)));
+    text_replacements->setItem(
+            row,
+            2,
+            new QTableWidgetItem(QString::fromStdString(replacement.to)));
+    auto *remove = new QPushButton(QStringLiteral("×"));
+    remove->setFixedWidth(34);
+    remove->setToolTip(QStringLiteral("Удалить правило"));
+    connect(remove, &QPushButton::clicked, this, [this, remove] {
+        for (int index = 0; index < text_replacements->rowCount(); ++index) {
+            if (text_replacements->cellWidget(index, 3) == remove) {
+                text_replacements->removeRow(index);
+                return;
+            }
+        }
+    });
+    text_replacements->setCellWidget(row, 3, remove);
+}
+
+void CaptionSettingsWidget::populate_text_replacements() {
+    text_replacements->setRowCount(0);
+    for (const TextReplacement &replacement :
+         current_settings.source_cap_settings.format_settings.text_replacements) {
+        append_text_replacement_row(replacement);
+    }
+}
+
+void CaptionSettingsWidget::add_text_replacement() {
+    append_text_replacement_row(TextReplacement{});
+    if (text_replacements->rowCount() > 0)
+        text_replacements->editItem(text_replacements->item(text_replacements->rowCount() - 1, 1));
+}
+
+void CaptionSettingsWidget::update_filename_preview() {
+    const QString filename_template = file_output_filename->text().trimmed().isEmpty()
+            ? QStringLiteral("captions.txt")
+            : file_output_filename->text();
+    file_output_filename_preview->setText(
+            QStringLiteral("Пример итогового имени: %1")
+                    .arg(format_caption_filename(filename_template)));
 }
 
 void CaptionSettingsWidget::update_source_controls() {
@@ -324,11 +435,37 @@ void CaptionSettingsWidget::accept_current_settings() {
             caption_when_combo->currentData().toString().toStdString());
 
     source.native_stream_output_enabled = stream_output_checkbox->isChecked();
+    std::vector<TextReplacement> replacements;
+    replacements.reserve(static_cast<std::size_t>(text_replacements->rowCount()));
+    for (int row = 0; row < text_replacements->rowCount(); ++row) {
+        auto *type = qobject_cast<QComboBox *>(text_replacements->cellWidget(row, 0));
+        const QTableWidgetItem *from_item = text_replacements->item(row, 1);
+        const QTableWidgetItem *to_item = text_replacements->item(row, 2);
+        const QString from = from_item ? from_item->text().trimmed() : QString();
+        if (from.isEmpty())
+            continue;
+        TextReplacement replacement{
+                type ? type->currentData().toString().toStdString()
+                     : "whole_word_case_insensitive",
+                from.toStdString(),
+                to_item ? to_item->text().toStdString() : std::string()};
+        if (!text_replacement_is_valid(replacement)) {
+            show_validation_error(
+                    QStringLiteral("Проверьте правило автозамены в строке %1: шаблон слишком длинный или Regex содержит ошибку.")
+                            .arg(row + 1),
+                    text_replacements);
+            return;
+        }
+        replacements.push_back(std::move(replacement));
+    }
+    source.format_settings.text_replacements =
+            normalized_text_replacements(replacements);
     FileOutputSettings &file = source.file_output_settings;
     file.enabled = file_output_checkbox->isChecked();
     file.output_folder = file_output_folder->text().trimmed().toStdString();
-    const QString safe_filename = QFileInfo(file_output_filename->text().trimmed()).fileName();
-    file.filename_custom = safe_filename.isEmpty() ? "captions.txt" : safe_filename.toStdString();
+    file.filename_custom = sanitize_caption_filename_template(
+                                   file_output_filename->text())
+                                   .toStdString();
 
     if (current_settings.enabled && audio.caption_source_name.empty()) {
         show_validation_error(
@@ -391,7 +528,9 @@ void CaptionSettingsWidget::set_browser_urls(
     const bool available = !overlay_url.isEmpty() && !designer_url.isEmpty();
     copy_browser_button->setEnabled(available);
     browser_designer_button->setEnabled(available);
-    if (!available)
+    if (available)
+        copy_status->clear();
+    else
         copy_status->setText(QStringLiteral("Локальный браузерный источник не запустился"));
 }
 

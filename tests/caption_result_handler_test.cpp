@@ -20,7 +20,19 @@ CaptionResult caption(const char *text, bool final, std::chrono::steady_clock::t
 }
 
 int main() {
-    CaptionFormatSettings settings{96, 2, false, true, false, 3.0};
+    CaptionFormatSettings settings{
+            96,
+            2,
+            false,
+            true,
+            false,
+            3.0,
+            {
+                    TextReplacement{
+                            "whole_word_case_insensitive",
+                            "блять",
+                            "***"},
+            }};
     CaptionResultHandler handler(settings);
     std::deque<std::shared_ptr<OutputCaptionResult>> history;
     const auto now = std::chrono::steady_clock::now();
@@ -59,6 +71,18 @@ int main() {
             false,
             history);
     require(without_history && without_history->output_line == "третье Discord", "History-free output must restore English terms");
+
+    auto filtered = handler.prepare_caption_output(
+            caption("БЛЯТЬ это должно скрываться, а блятьё нет", false, now),
+            false,
+            false,
+            false,
+            96,
+            2,
+            false,
+            history);
+    require(filtered && filtered->output_line == "*** это должно скрываться, а блятьё нет",
+            "User whole-word replacements must be Unicode-aware and case-insensitive");
 
     auto bilingual = handler.prepare_caption_output(
             caption("русский English 42 — только два алфавита", false, now),
