@@ -43,7 +43,12 @@ public:
             const std::shared_ptr<OutputCaptionResult> &caption,
             bool cleared);
 
-    static QByteArray build_state_json(const QString &text, bool final, std::uint64_t revision);
+    static QByteArray build_state_json(
+            const QString &text,
+            const QString &current_text,
+            int caption_index,
+            bool final,
+            std::uint64_t revision);
     static QByteArray build_overlay_html();
     static QByteArray build_designer_html();
 
@@ -57,6 +62,8 @@ private:
     QString access_token;
     bool browser_consumer_active = false;
     QString caption_text;
+    QString caption_current_text;
+    int caption_index = 0;
     bool caption_final = true;
     std::uint64_t revision = 0;
 

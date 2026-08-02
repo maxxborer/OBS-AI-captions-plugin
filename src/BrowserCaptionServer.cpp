@@ -128,20 +128,33 @@ void BrowserCaptionServer::update_caption(
         bool cleared) {
     if (cleared || !caption) {
         caption_text.clear();
+        caption_current_text.clear();
+        caption_index = 0;
         caption_final = true;
     } else {
         caption_text = QString::fromStdString(caption->output_line)
                                .simplified()
                                .left(kMaximumCaptionCharacters);
+        caption_current_text = QString::fromStdString(caption->clean_caption_text)
+                                       .simplified()
+                                       .left(kMaximumCaptionCharacters);
+        caption_index = caption->caption_result.index;
         caption_final = caption->caption_result.final;
     }
     ++revision;
     broadcast_state();
 }
 
-QByteArray BrowserCaptionServer::build_state_json(const QString &text, bool final, std::uint64_t revision) {
+QByteArray BrowserCaptionServer::build_state_json(
+        const QString &text,
+        const QString &current_text,
+        int caption_index,
+        bool final,
+        std::uint64_t revision) {
     QJsonObject state;
     state.insert(QStringLiteral("text"), text);
+    state.insert(QStringLiteral("currentText"), current_text);
+    state.insert(QStringLiteral("index"), caption_index);
     state.insert(QStringLiteral("final"), final);
     state.insert(QStringLiteral("revision"), QString::number(revision));
     return QJsonDocument(state).toJson(QJsonDocument::Compact);
@@ -264,15 +277,29 @@ QByteArray BrowserCaptionServer::build_overlay_html() {
     rootStyle.setProperty('--active-radius', `${numberParameter('radius', 14, 0, 50)}px`);
     rootStyle.setProperty('--active-scale', `${numberParameter('scale', 1.06, 1, 1.5)}`);
     let currentRevision = '';
+    let activeIndex = null;
+    let activeText = '';
+    const historyWords = [];
     let events = null;
     let hideTimer = 0;
 
-    function render(state) {
+    function splitWords(text) {
+      return text.trim().split(/\s+/u).filter(Boolean);
+    }
+
+    function resetVisibleHistory() {
+      historyWords.length = 0;
+      activeIndex = null;
+      activeText = '';
       caption.replaceChildren();
-      const words = state.text.trim().split(/\s+/u).filter(Boolean).slice(-maximumWords);
+      caption.classList.remove('visible');
+    }
+
+    function render(words, final) {
+      caption.replaceChildren();
       words.forEach((word, index) => {
         const span = document.createElement('span');
-        span.className = 'word' + (!state.final && index === words.length - 1 ? ' active' : '');
+        span.className = 'word' + (!final && index === words.length - 1 ? ' active' : '');
         span.textContent = word;
         caption.appendChild(span);
       });
@@ -283,9 +310,23 @@ QByteArray BrowserCaptionServer::build_overlay_html() {
       if (state.revision === currentRevision)
         return;
       currentRevision = state.revision;
-      render(state);
       clearTimeout(hideTimer);
-      hideTimer = setTimeout(() => caption.classList.remove('visible'), timeoutMs);
+      const currentText = typeof state.currentText === 'string' ? state.currentText.trim() : '';
+      if (!currentText) {
+        resetVisibleHistory();
+        return;
+      }
+      const nextIndex = Number.isInteger(state.index) ? state.index : String(state.index ?? '');
+      if (activeIndex !== null && nextIndex !== activeIndex && activeText) {
+        historyWords.push(...splitWords(activeText));
+        if (historyWords.length > maximumWords)
+          historyWords.splice(0, historyWords.length - maximumWords);
+      }
+      activeIndex = nextIndex;
+      activeText = currentText;
+      const visibleWords = [...historyWords, ...splitWords(activeText)].slice(-maximumWords);
+      render(visibleWords, Boolean(state.final));
+      hideTimer = setTimeout(resetVisibleHistory, timeoutMs);
     }
 
     function connectEvents() {
@@ -308,7 +349,7 @@ QByteArray BrowserCaptionServer::build_overlay_html() {
         events = null;
       }
       clearTimeout(hideTimer);
-      caption.classList.remove('visible');
+      resetVisibleHistory();
     }
 
     document.addEventListener('visibilitychange', () => {
@@ -629,7 +670,14 @@ void BrowserCaptionServer::start_event_stream(QTcpSocket *socket) {
     response += "Referrer-Policy: no-referrer\r\n";
     response += "Connection: keep-alive\r\n\r\n";
     response += "retry: 1000\n\n";
-    response += "data: " + build_state_json(caption_text, caption_final, revision) + "\n\n";
+    response += "data: " +
+            build_state_json(
+                    caption_text,
+                    caption_current_text,
+                    caption_index,
+                    caption_final,
+                    revision) +
+            "\n\n";
     socket->write(response);
     update_browser_consumer_presence();
 }
@@ -639,7 +687,14 @@ void BrowserCaptionServer::broadcast_state() {
         return;
 
     const QByteArray event =
-            "data: " + build_state_json(caption_text, caption_final, revision) + "\n\n";
+            "data: " +
+            build_state_json(
+                    caption_text,
+                    caption_current_text,
+                    caption_index,
+                    caption_final,
+                    revision) +
+            "\n\n";
     QList<QTcpSocket *> stalled_clients;
     for (QTcpSocket *socket : event_clients) {
         if (socket->bytesToWrite() > kMaximumPendingEventBytes) {

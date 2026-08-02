@@ -60,10 +60,18 @@ int main(int argc, char **argv) {
             "Browser caption server must fail closed without a 256-bit token");
 
     const QByteArray json = BrowserCaptionServer::build_state_json(
-            QString::fromUtf8("быстрые слова OBS"), false, 42);
+            QString::fromUtf8("старые слова. быстрые слова OBS"),
+            QString::fromUtf8("быстрые слова OBS"),
+            7,
+            false,
+            42);
     const QJsonObject state = QJsonDocument::fromJson(json).object();
-    require(state.value("text").toString() == QString::fromUtf8("быстрые слова OBS"),
-            "State must preserve Russian and English text");
+    require(state.value("text").toString() == QString::fromUtf8("старые слова. быстрые слова OBS"),
+            "State must preserve the complete server caption text");
+    require(state.value("currentText").toString() == QString::fromUtf8("быстрые слова OBS"),
+            "State must expose the current utterance separately from server history");
+    require(state.value("index").toInt() == 7,
+            "State must identify the current utterance for browser-local history");
     require(!state.value("final").toBool(), "Partial state must remain partial");
     require(state.value("revision").toString() == QStringLiteral("42"),
             "Revision must be serialized without numeric precision loss");
@@ -73,6 +81,10 @@ int main(int argc, char **argv) {
             "Overlay word count must be configurable in the Browser Source URL");
     require(html.contains("parameters.get('timeout')") && html.contains("timeoutMs"),
             "Overlay timeout must be configurable in the Browser Source URL");
+    require(html.contains("historyWords.length = 0") && html.contains("activeIndex = null"),
+            "Overlay timeout must discard browser-local caption history");
+    require(html.contains("state.currentText") && html.contains("state.index"),
+            "Overlay must rebuild visible history only from post-timeout utterances");
     require(html.contains("index === words.length - 1") && html.contains("' active'"),
             "Overlay must mark the latest partial word as active");
     require(html.contains("textContent = word"), "Overlay must render recognized text without HTML injection");
@@ -173,6 +185,7 @@ int main(int argc, char **argv) {
             CaptionResult(1, false, 0.7, "русский OBS", "", now, now),
             false);
     pushed_caption->output_line = "русский OBS";
+    pushed_caption->clean_caption_text = "русский OBS";
     server.update_caption(pushed_caption, false);
     QByteArray pushed_event;
     event_timer.restart();

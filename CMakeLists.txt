@@ -122,6 +122,22 @@ if(BUILD_TESTING)
   )
   add_test(NAME english-term-replacements COMMAND english-term-replacements-test)
 
+  add_executable(text-replacements-test tests/text_replacements_test.cpp)
+  target_include_directories(text-replacements-test PRIVATE src)
+  target_link_libraries(text-replacements-test PRIVATE Qt6::Core)
+  target_compile_definitions(
+    text-replacements-test
+    PRIVATE PROFANITY_FILTER_PATH="${CMAKE_CURRENT_SOURCE_DIR}/PROFANITY_FILTER.md"
+  )
+  add_custom_command(
+    TARGET text-replacements-test
+    POST_BUILD
+    COMMAND
+      ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Qt6::Core>
+      $<TARGET_FILE_DIR:text-replacements-test>
+  )
+  add_test(NAME text-replacements COMMAND text-replacements-test)
+
   add_executable(
     caption-result-handler-test
     tests/caption_result_handler_test.cpp
@@ -201,4 +217,5 @@ if(BUILD_TESTING)
       $<TARGET_FILE_DIR:browser-caption-server-test>
   )
   add_test(NAME browser-caption-server COMMAND browser-caption-server-test)
+
 endif()
