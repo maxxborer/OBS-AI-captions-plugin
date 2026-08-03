@@ -58,6 +58,22 @@ static CaptionPluginSettings default_CaptionPluginSettings() {
             new_browser_overlay_settings());
 }
 
+static std::string normalized_local_hotwords(const std::string &input) {
+    QStringList phrases;
+    int bytes = 0;
+    for (const QString &line : QString::fromStdString(input).split('\n')) {
+        const QString phrase = line.trimmed();
+        const int phrase_bytes = phrase.toUtf8().size();
+        if (phrase.isEmpty() || phrase_bytes > 160 || phrases.size() >= 64 ||
+            bytes + phrase_bytes + (phrases.isEmpty() ? 0 : 1) > 2048) {
+            continue;
+        }
+        bytes += phrase_bytes + (phrases.isEmpty() ? 0 : 1);
+        phrases.push_back(phrase);
+    }
+    return phrases.join('\n').toStdString();
+}
+
 static std::vector<TextReplacement> get_TextReplacements(obs_data_t *load_data) {
     std::vector<TextReplacement> replacements;
     if (!load_data)
@@ -140,6 +156,12 @@ static void enforce_settings(CaptionPluginSettings &settings) {
     settings.source_cap_settings.format_settings.text_replacements =
             normalized_text_replacements(
                     settings.source_cap_settings.format_settings.text_replacements);
+    if (settings.source_cap_settings.local_caption_model != LocalCaptionModel::TOne &&
+        settings.source_cap_settings.local_caption_model != LocalCaptionModel::Nemotron560ms) {
+        settings.source_cap_settings.local_caption_model = LocalCaptionModel::TOne;
+    }
+    settings.source_cap_settings.local_hotwords =
+            normalized_local_hotwords(settings.source_cap_settings.local_hotwords);
 
     const QString token = QString::fromStdString(settings.browser_overlay.access_token);
     static const QRegularExpression valid_token(QStringLiteral("^[0-9a-f]{64}$"));
@@ -168,6 +190,8 @@ static CaptionPluginSettings get_CaptionPluginSettings_from_data(obs_data_t *loa
     obs_data_set_default_string(load_data, "file_output_filename_custom", file.filename_custom.c_str());
     obs_data_set_default_int(load_data, "browser_overlay_port", 0);
     obs_data_set_default_string(load_data, "browser_overlay_token", "");
+    obs_data_set_default_string(load_data, "local_caption_model", "t_one");
+    obs_data_set_default_string(load_data, "local_hotwords", "");
     obs_data_set_default_bool(load_data, "legacy_word_replacements_migrated", false);
 
     settings.enabled = obs_data_get_bool(load_data, "enabled");
@@ -184,6 +208,12 @@ static CaptionPluginSettings get_CaptionPluginSettings_from_data(obs_data_t *loa
             obs_data_get_int(load_data, "browser_overlay_port"));
     settings.browser_overlay.access_token =
             obs_data_get_string(load_data, "browser_overlay_token");
+    settings.source_cap_settings.local_caption_model =
+            std::string(obs_data_get_string(load_data, "local_caption_model")) == "nemotron_560ms"
+                    ? LocalCaptionModel::Nemotron560ms
+                    : LocalCaptionModel::TOne;
+    settings.source_cap_settings.local_hotwords =
+            obs_data_get_string(load_data, "local_hotwords");
 
     enforce_settings(settings);
     return settings;
@@ -205,6 +235,13 @@ static void set_CaptionPluginSettings_on_data(
     obs_data_set_bool(save_data, "file_output_enabled", file.enabled);
     obs_data_set_string(save_data, "file_output_folder", file.output_folder.c_str());
     obs_data_set_string(save_data, "file_output_filename_custom", file.filename_custom.c_str());
+    obs_data_set_string(
+            save_data,
+            "local_caption_model",
+            source.local_caption_model == LocalCaptionModel::Nemotron560ms
+                    ? "nemotron_560ms"
+                    : "t_one");
+    obs_data_set_string(save_data, "local_hotwords", source.local_hotwords.c_str());
     set_TextReplacements(save_data, source.format_settings.text_replacements);
     obs_data_set_bool(save_data, "legacy_word_replacements_migrated", true);
     obs_data_set_int(save_data, "browser_overlay_port", settings.browser_overlay.port);

@@ -207,7 +207,7 @@ function Install-LocalModel(
 
         if (-not (Test-Path -LiteralPath $cachedArchive -PathType Leaf)) {
             Limit-DownloadCache $CacheDirectory ($MaximumCacheBytes - [long] $Manifest.archiveBytes)
-            Write-Host 'Скачиваю быструю локальную русскую модель (около 128 МБ)...'
+            Write-Host "Скачиваю локальную модель '$($Manifest.name)'..."
             Invoke-WebRequest -Uri $Manifest.url -OutFile $downloadPath
             if ((Get-Item -LiteralPath $downloadPath).Length -ne [long] $Manifest.archiveBytes -or
                 (Get-Sha256 $downloadPath) -ne $Manifest.sha256) {
@@ -238,7 +238,7 @@ function Install-LocalModel(
         if (-not (Test-InstalledModel $modelDirectory $Manifest)) {
             throw 'The installed local model did not pass its post-install integrity check.'
         }
-        Write-Host 'Локальная модель установлена и проверена.'
+        Write-Host "Локальная модель '$($Manifest.name)' установлена и проверена."
     }
     finally {
         if (Test-Path -LiteralPath $downloadPath -PathType Leaf) {
@@ -257,9 +257,15 @@ if (-not (Test-Path -LiteralPath $modelManifestPath -PathType Leaf)) {
     throw "The package is incomplete. Missing model manifest: $modelManifestPath"
 }
 
-$manifest = Get-Content -LiteralPath $modelManifestPath -Raw | ConvertFrom-Json
-if (-not ($manifest.url -and $manifest.archiveBytes -and $manifest.sha256 -and $manifest.modelDirectory -and $manifest.archiveFile -and @($manifest.requiredFiles).Count -and $manifest.requiredFileSha256)) {
-    throw 'The local model manifest is invalid.'
+$manifestDocument = Get-Content -LiteralPath $modelManifestPath -Raw | ConvertFrom-Json
+$manifests = @($manifestDocument.models)
+if ($manifests.Count -eq 0) {
+    throw 'The local model manifest does not contain any models.'
+}
+foreach ($manifest in $manifests) {
+    if (-not ($manifest.id -and $manifest.name -and $manifest.url -and $manifest.archiveBytes -and $manifest.sha256 -and $manifest.modelDirectory -and $manifest.archiveFile -and @($manifest.requiredFiles).Count -and $manifest.requiredFileSha256)) {
+        throw 'The local model manifest is invalid.'
+    }
 }
 
 $requestedPluginRoot = Get-NormalizedPath $ObsPluginRoot
@@ -277,21 +283,23 @@ $pluginDirectory = Assert-ChildPath (Join-Path $requestedPluginRoot $pluginName)
 $stagingDirectory = Assert-ChildPath (Join-Path $requestedPluginRoot (".$pluginName.staging-" + [guid]::NewGuid().ToString('N'))) $requestedPluginRoot
 $backupDirectory = Assert-ChildPath (Join-Path $requestedPluginRoot (".$pluginName.backup-" + [guid]::NewGuid().ToString('N'))) $requestedPluginRoot
 $backupCreated = $false
-$existingModelReusable = $false
+$existingModelsReusable = @{}
 
 try {
     New-Item -ItemType Directory -Force -Path $stagingDirectory | Out-Null
     Copy-Item -Path (Join-Path $packagePluginDirectory '*') -Destination $stagingDirectory -Recurse -Force
 
-    $existingModelDirectory = Join-Path $pluginDirectory (Join-Path 'data\models' $manifest.modelDirectory)
-    if (Test-Path -LiteralPath $existingModelDirectory -PathType Container) {
-        Assert-SafeTree $existingModelDirectory | Out-Null
-        $existingModelReusable = Test-InstalledModel $existingModelDirectory $manifest
-        if ($existingModelReusable) {
-            Write-Host 'Найдена проверенная локальная модель; она будет сохранена при обновлении.'
-            $stagingModelsDirectory = Join-Path $stagingDirectory 'data\models'
-            New-Item -ItemType Directory -Force -Path $stagingModelsDirectory | Out-Null
-            Copy-Item -LiteralPath $existingModelDirectory -Destination (Join-Path $stagingModelsDirectory $manifest.modelDirectory) -Recurse -Force
+    foreach ($manifest in $manifests) {
+        $existingModelDirectory = Join-Path $pluginDirectory (Join-Path 'data\models' $manifest.modelDirectory)
+        if (Test-Path -LiteralPath $existingModelDirectory -PathType Container) {
+            Assert-SafeTree $existingModelDirectory | Out-Null
+            $existingModelsReusable[$manifest.id] = Test-InstalledModel $existingModelDirectory $manifest
+            if ($existingModelsReusable[$manifest.id]) {
+                Write-Host "Найдена проверенная модель '$($manifest.name)'; она будет сохранена при обновлении."
+                $stagingModelsDirectory = Join-Path $stagingDirectory 'data\models'
+                New-Item -ItemType Directory -Force -Path $stagingModelsDirectory | Out-Null
+                Copy-Item -LiteralPath $existingModelDirectory -Destination (Join-Path $stagingModelsDirectory $manifest.modelDirectory) -Recurse -Force
+            }
         }
     }
 
@@ -302,21 +310,23 @@ try {
     }
     Move-Item -LiteralPath $stagingDirectory -Destination $pluginDirectory
 
-    $installedModelDirectory = Join-Path $pluginDirectory (Join-Path 'data\models' $manifest.modelDirectory)
-    if ($existingModelReusable) {
-        if (-not (Test-InstalledModel $installedModelDirectory $manifest)) {
-            throw 'The existing local model could not be preserved during the plugin update.'
+    foreach ($manifest in $manifests) {
+        $installedModelDirectory = Join-Path $pluginDirectory (Join-Path 'data\models' $manifest.modelDirectory)
+        if ($existingModelsReusable[$manifest.id]) {
+            if (-not (Test-InstalledModel $installedModelDirectory $manifest)) {
+                throw 'The existing local model could not be preserved during the plugin update.'
+            }
+            Write-Host "Сохраняю проверенную модель '$($manifest.name)' при обновлении."
         }
-        Write-Host 'Сохраняю проверенную локальную модель при обновлении.'
-    }
-    else {
-        Install-LocalModel $pluginDirectory $cacheDirectory $cacheLimitBytes $manifest
+        else {
+            Install-LocalModel $pluginDirectory $cacheDirectory $cacheLimitBytes $manifest
+        }
     }
 
     if ($backupCreated -and (Test-Path -LiteralPath $backupDirectory)) {
         Remove-SafeTree $backupDirectory
     }
-    Write-Host 'AI Caption Plugin обновлён. Быстрая локальная русская модель установлена и выбрана автоматически.'
+    Write-Host 'AI Caption Plugin обновлён. Локальные модели установлены и доступны в настройках.'
 }
 catch {
     if ($backupCreated -and (Test-Path -LiteralPath $backupDirectory)) {

@@ -109,6 +109,9 @@ int main(int argc, char **argv) {
             "Designer must provide visual color controls and a generated URL");
     require(designer.contains("value=\"#8b5cf6\"") && designer.contains("value=\"Geologica\""),
             "Designer must start with the requested purple and Geologica preset");
+    require(designer.contains("id=\"restore\"") && designer.contains("restoreButton") &&
+                    designer.contains("new URL(restore.value.trim(), location.href)"),
+            "Designer must restore a previously used Browser Source URL safely");
 
     BrowserOverlaySettings browser_settings;
     browser_settings.port = 0;

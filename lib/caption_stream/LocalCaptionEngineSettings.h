@@ -12,10 +12,18 @@ of the License, or (at your option) any later version.
 
 #include <string>
 
+enum class LocalCaptionModel {
+    TOne,
+    Nemotron560ms,
+};
+
 struct LocalCaptionEngineSettings {
     std::string model_directory;
     unsigned int num_threads = 1;
     unsigned int max_pending_audio_ms = 1000;
+    LocalCaptionModel model = LocalCaptionModel::TOne;
+    // One phrase per line. T-One uses these only with modified beam search.
+    std::string hotwords;
 };
 
 #endif // AI_CAPTION_PLUGIN_LOCAL_CAPTION_ENGINE_SETTINGS_H

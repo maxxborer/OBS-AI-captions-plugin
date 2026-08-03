@@ -22,6 +22,8 @@ int main() {
             "A first-run configuration must generate a browser overlay port");
     require(fresh.browser_overlay.access_token.size() == 64,
             "A first-run configuration must generate a protected browser URL");
+    require(fresh.source_cap_settings.local_caption_model == LocalCaptionModel::TOne,
+            "T-One must remain the first-run local model");
 
     obs_data_t *incomplete_root = obs_data_create();
     obs_data_t *incomplete_current = obs_data_create();
@@ -65,6 +67,14 @@ int main() {
     require(saved.source_cap_settings.format_settings.text_replacements ==
                     migrated.source_cap_settings.format_settings.text_replacements,
             "Migrated replacements must survive a save and reload");
+
+    migrated.source_cap_settings.local_caption_model = LocalCaptionModel::Nemotron560ms;
+    migrated.source_cap_settings.local_hotwords = "OBS\nTwitch\n";
+    save_CaptionPluginSettings(root, migrated);
+    const CaptionPluginSettings saved_model = load_CaptionPluginSettings(root);
+    require(saved_model.source_cap_settings.local_caption_model == LocalCaptionModel::Nemotron560ms &&
+                    saved_model.source_cap_settings.local_hotwords == "OBS\nTwitch",
+            "The selected local model and normalized hotwords must survive a save and reload");
 
     obs_data_t *banned_root = obs_data_create();
     obs_data_t *banned_legacy = obs_data_create();

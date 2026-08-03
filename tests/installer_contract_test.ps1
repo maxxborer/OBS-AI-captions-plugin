@@ -73,19 +73,24 @@ param([Parameter(Mandatory = $true)][string] $MarkerPath)
     }
 }
 
-$manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
-if ([long] $manifest.archiveBytes -le 0 -or [long] $manifest.archiveBytes -gt 1GB) {
-    throw 'The model archive must fit in the 1 GiB download cache.'
+$manifestDocument = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+$manifests = @($manifestDocument.models)
+if ($manifests.Count -lt 2) {
+    throw 'The local model manifest must include T-One and Nemotron.'
 }
-if (-not $manifest.sha256 -or @($manifest.requiredFiles).Count -eq 0 -or -not $manifest.requiredFileSha256) {
-    throw 'The local model integrity contract is incomplete.'
-}
-
 $engineSource = Get-Content -LiteralPath (Join-Path $projectRoot 'lib\caption_stream\SherpaTOneCaptionEngine.cpp') -Raw
-foreach ($requiredFile in @($manifest.requiredFiles)) {
-    $expectedHash = $manifest.requiredFileSha256.PSObject.Properties[[string] $requiredFile].Value
-    if (-not $expectedHash -or -not $engineSource.Contains([string] $expectedHash)) {
-        throw "The installer and runtime integrity contracts differ for: $requiredFile"
+foreach ($manifest in $manifests) {
+    if ([long] $manifest.archiveBytes -le 0 -or [long] $manifest.archiveBytes -gt 1GB) {
+        throw 'Every model archive must fit in the 1 GiB download cache.'
+    }
+    if (-not $manifest.id -or -not $manifest.sha256 -or @($manifest.requiredFiles).Count -eq 0 -or -not $manifest.requiredFileSha256) {
+        throw 'The local model integrity contract is incomplete.'
+    }
+    foreach ($requiredFile in @($manifest.requiredFiles)) {
+        $expectedHash = $manifest.requiredFileSha256.PSObject.Properties[[string] $requiredFile].Value
+        if (-not $expectedHash -or -not $engineSource.Contains([string] $expectedHash)) {
+            throw "The installer and runtime integrity contracts differ for: $($manifest.id)/$requiredFile"
+        }
     }
 }
 

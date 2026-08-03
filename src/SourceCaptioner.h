@@ -11,6 +11,7 @@ of the License, or (at your option) any later version.
 #define OBS_STUDIO_SOURCECAPTIONER_H
 
 #include <CaptionEngine.h>
+#include <LocalCaptionEngineSettings.h>
 
 #include "CaptionResultHandler.h"
 #include "OutputAudioCaptureSession.h"
@@ -94,22 +95,30 @@ struct SourceCaptionerSettings {
     FileOutputSettings file_output_settings;
     CaptionSourceSettings caption_source_settings;
     CaptionFormatSettings format_settings;
+    LocalCaptionModel local_caption_model = LocalCaptionModel::TOne;
+    string local_hotwords;
 
     SourceCaptionerSettings(
             bool native_stream_output_enabled,
             const FileOutputSettings &file_output_settings,
             const CaptionSourceSettings &caption_source_settings,
-            const CaptionFormatSettings &format_settings)
+            const CaptionFormatSettings &format_settings,
+            LocalCaptionModel local_caption_model = LocalCaptionModel::TOne,
+            const string &local_hotwords = {})
             : native_stream_output_enabled(native_stream_output_enabled),
               file_output_settings(file_output_settings),
               caption_source_settings(caption_source_settings),
-              format_settings(format_settings) {}
+              format_settings(format_settings),
+              local_caption_model(local_caption_model),
+              local_hotwords(local_hotwords) {}
 
     bool operator==(const SourceCaptionerSettings &rhs) const {
         return native_stream_output_enabled == rhs.native_stream_output_enabled &&
                file_output_settings == rhs.file_output_settings &&
                caption_source_settings == rhs.caption_source_settings &&
-               format_settings == rhs.format_settings;
+               format_settings == rhs.format_settings &&
+               local_caption_model == rhs.local_caption_model &&
+               local_hotwords == rhs.local_hotwords;
     }
 
     bool operator!=(const SourceCaptionerSettings &rhs) const {

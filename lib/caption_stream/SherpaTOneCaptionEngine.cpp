@@ -28,7 +28,8 @@ of the License, or (at your option) any later version.
 #include <sherpa-onnx/c-api/c-api.h>
 
 namespace {
-constexpr unsigned int kSampleRate = 8000;
+constexpr unsigned int kTOneSampleRate = 8000;
+constexpr unsigned int kNemotronSampleRate = 16000;
 constexpr unsigned int kFeatureDimension = 80;
 constexpr float kEndpointTrailingSilenceSeconds = 1.2F;
 constexpr float kEndpointMaximumUtteranceSeconds = 20.0F;
@@ -36,6 +37,14 @@ constexpr const char *kModelSha256 =
         "5ded080e2a6c86ecc11bcb0902d77524eb3e8b0844cb0c0754347f5aafb4dabc";
 constexpr const char *kTokensSha256 =
         "27f7b3ba2096c572375fba1a6b29af1f80d86e08a329940612908112695f97e0";
+constexpr const char *kNemotronEncoderSha256 =
+        "012e9321373af99021415e0b0eb3ec827b4be3153be6f30d9b448fe65e896e68";
+constexpr const char *kNemotronDecoderSha256 =
+        "19f9c98fc6d0a2c33a65a43b36fdb2e914c26c0aa9764be3aebc502a1e982fb0";
+constexpr const char *kNemotronJoinerSha256 =
+        "4101c7c679a0bc30483794b27a059e34e79232aa2068d78d51231a22c8b0d7ce";
+constexpr const char *kNemotronTokensSha256 =
+        "729cc103155bafa785f9cd45746cd41cabe97eab7182fc04d594129587958f8a";
 
 class LockedModelFile {
 public:
@@ -167,7 +176,7 @@ public:
             actual[index * 2] = digits[digest[index] >> 4U];
             actual[index * 2 + 1] = digits[digest[index] & 0x0fU];
         }
-        if (actual != expected_sha256) {
+        if (expected_sha256 && actual != expected_sha256) {
             throw std::runtime_error(
                     "Local Russian model integrity check failed for '" +
                     path.string() + "'. Run Install-AICaptionPlugin.ps1 again.");
@@ -210,26 +219,67 @@ void destroy_recognizer(const SherpaOnnxOnlineRecognizer *&recognizer) {
 
 SherpaTOneCaptionEngine::SherpaTOneCaptionEngine(const LocalCaptionEngineSettings &settings)
         : num_threads(std::max(1U, settings.num_threads)),
-          max_pending_samples(kSampleRate * std::max(1U, settings.max_pending_audio_ms) / 1000U),
+          sample_rate(settings.model == LocalCaptionModel::Nemotron560ms
+                              ? kNemotronSampleRate
+                              : kTOneSampleRate),
+          max_pending_samples(sample_rate * std::max(1U, settings.max_pending_audio_ms) / 1000U),
           model_directory(settings.model_directory),
+          model(settings.model),
+          hotwords(settings.hotwords),
+          engine_name(model == LocalCaptionModel::Nemotron560ms
+                              ? "local-sherpa-nemotron-3.5-560ms"
+                              : "local-sherpa-t-one"),
           audio_ring(max_pending_samples),
           first_caption_at(std::chrono::steady_clock::now()) {
     if (model_directory.empty())
         throw std::runtime_error("Local Russian model directory is unavailable. Run Install-AICaptionPlugin.ps1 again.");
 
-    LockedModelFile model_file(model_directory, "model.onnx", kModelSha256);
-    LockedModelFile tokens_file(model_directory, "tokens.txt", kTokensSha256);
-    const std::string model = model_file.filename();
+    const bool use_nemotron = model == LocalCaptionModel::Nemotron560ms;
+    LockedModelFile model_file(
+            model_directory,
+            use_nemotron ? "encoder.int8.onnx" : "model.onnx",
+            use_nemotron ? kNemotronEncoderSha256 : kModelSha256);
+    LockedModelFile tokens_file(
+            model_directory,
+            "tokens.txt",
+            use_nemotron ? kNemotronTokensSha256 : kTokensSha256);
+    const std::string primary_model = model_file.filename();
     const std::string tokens = tokens_file.filename();
+    std::unique_ptr<LockedModelFile> decoder_file;
+    std::unique_ptr<LockedModelFile> joiner_file;
+    std::string decoder;
+    std::string joiner;
+    if (use_nemotron) {
+        decoder_file = std::make_unique<LockedModelFile>(
+                model_directory, "decoder.int8.onnx", kNemotronDecoderSha256);
+        joiner_file = std::make_unique<LockedModelFile>(
+                model_directory, "joiner.int8.onnx", kNemotronJoinerSha256);
+        decoder = decoder_file->filename();
+        joiner = joiner_file->filename();
+    }
 
     SherpaOnnxOnlineRecognizerConfig config{};
-    config.feat_config.sample_rate = static_cast<int32_t>(kSampleRate);
+    config.feat_config.sample_rate = static_cast<int32_t>(sample_rate);
     config.feat_config.feature_dim = static_cast<int32_t>(kFeatureDimension);
-    config.model_config.t_one_ctc.model = model.c_str();
+    if (use_nemotron) {
+        config.model_config.transducer.encoder = primary_model.c_str();
+        config.model_config.transducer.decoder = decoder.c_str();
+        config.model_config.transducer.joiner = joiner.c_str();
+    } else {
+        config.model_config.t_one_ctc.model = primary_model.c_str();
+    }
     config.model_config.tokens = tokens.c_str();
     config.model_config.provider = "cpu";
     config.model_config.num_threads = static_cast<int32_t>(num_threads);
-    config.decoding_method = "greedy_search";
+    config.decoding_method = !use_nemotron && !hotwords.empty()
+                                     ? "modified_beam_search"
+                                     : "greedy_search";
+    if (!use_nemotron && !hotwords.empty()) {
+        config.max_active_paths = 4;
+        config.hotwords_buf = hotwords.c_str();
+        config.hotwords_buf_size = static_cast<int32_t>(hotwords.size());
+        config.hotwords_score = 1.5F;
+    }
     config.enable_endpoint = 1;
     config.rule1_min_trailing_silence = 2.4F;
     config.rule2_min_trailing_silence = kEndpointTrailingSilenceSeconds;
@@ -242,6 +292,10 @@ SherpaTOneCaptionEngine::SherpaTOneCaptionEngine(const LocalCaptionEngineSetting
     try {
         model_file.verify_if_changed();
         tokens_file.verify_if_changed();
+        if (decoder_file)
+            decoder_file->verify_if_changed();
+        if (joiner_file)
+            joiner_file->verify_if_changed();
     } catch (...) {
         destroy_recognizer(recognizer);
         throw;
@@ -252,6 +306,8 @@ SherpaTOneCaptionEngine::SherpaTOneCaptionEngine(const LocalCaptionEngineSetting
         destroy_recognizer(recognizer);
         throw std::runtime_error("Unable to create a local recognition stream.");
     }
+    if (use_nemotron)
+        SherpaOnnxOnlineStreamSetOption(stream, "language", "ru-RU");
 
     worker = std::thread(&SherpaTOneCaptionEngine::worker_loop, this);
 }
@@ -305,7 +361,7 @@ bool SherpaTOneCaptionEngine::queue_audio_data(const char *data, unsigned int da
 }
 
 unsigned int SherpaTOneCaptionEngine::preferred_sample_rate() const {
-    return kSampleRate;
+    return sample_rate;
 }
 
 SherpaTOneCaptionEngine::~SherpaTOneCaptionEngine() {
@@ -369,7 +425,7 @@ void SherpaTOneCaptionEngine::decode_audio(
 
     SherpaOnnxOnlineStreamAcceptWaveform(
             stream,
-            static_cast<int32_t>(kSampleRate),
+            static_cast<int32_t>(sample_rate),
             samples.data(),
             static_cast<int32_t>(samples.size()));
 
@@ -410,7 +466,7 @@ void SherpaTOneCaptionEngine::publish_current_result(bool final) {
             final,
             final ? 1.0 : 0.7,
             text,
-            "local-sherpa-t-one",
+            engine_name,
             first_caption_at,
             now);
     last_caption_text = text;

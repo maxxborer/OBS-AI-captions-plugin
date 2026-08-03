@@ -44,8 +44,12 @@ private:
     void reset_utterance();
 
     const unsigned int num_threads;
+    const unsigned int sample_rate;
     const std::size_t max_pending_samples;
     const std::string model_directory;
+    const LocalCaptionModel model;
+    const std::string hotwords;
+    const std::string engine_name;
 
     const SherpaOnnxOnlineRecognizer *recognizer = nullptr;
     const SherpaOnnxOnlineStream *stream = nullptr;

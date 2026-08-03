@@ -13,6 +13,7 @@ class QLineEdit;
 class QPushButton;
 class QShowEvent;
 class QTableWidget;
+class QTextEdit;
 class QWidget;
 
 class CaptionSettingsWidget final : public QWidget {
@@ -48,6 +49,8 @@ private:
     QComboBox *caption_when_combo = nullptr;
     QComboBox *mute_source_combo = nullptr;
     QWidget *mute_source_row = nullptr;
+    QComboBox *local_model_combo = nullptr;
+    QTextEdit *local_hotwords = nullptr;
     QCheckBox *stream_output_checkbox = nullptr;
     QCheckBox *file_output_checkbox = nullptr;
     QWidget *file_output_controls = nullptr;

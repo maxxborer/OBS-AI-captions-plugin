@@ -481,6 +481,10 @@ QByteArray BrowserCaptionServer::build_designer_html() {
     </section>
   </div>
   <section class="panel result">
+    <label class="wide">Восстановить настройки из уже добавленного Browser Source
+      <div class="result-row"><input id="restore" placeholder="Вставьте текущий URL Browser Source"><button id="restoreButton" class="secondary">Восстановить</button></div>
+    </label>
+    <p class="hint">Вставьте полный URL источника из OBS, чтобы поменять один-два параметра без настройки с нуля. Ссылка не открывается в сети: страница читает только её параметры оформления.</p>
     <label class="wide">Готовый URL для Browser Source</label>
     <div class="result-row">
       <input id="url" readonly>
@@ -496,6 +500,7 @@ QByteArray BrowserCaptionServer::build_designer_html() {
   const fields = Object.fromEntries(ids.map(id => [id, document.getElementById(id)]));
   const preview = document.getElementById('preview');
   const url = document.getElementById('url');
+  const restore = document.getElementById('restore');
   const copied = document.getElementById('copied');
 
   function update() {
@@ -546,6 +551,29 @@ QByteArray BrowserCaptionServer::build_designer_html() {
     }
   });
   document.getElementById('open').addEventListener('click', () => window.open(url.value, '_blank', 'noopener'));
+  document.getElementById('restoreButton').addEventListener('click', () => {
+    let source;
+    try {
+      source = new URL(restore.value.trim(), location.href);
+    } catch (_) {
+      copied.textContent = 'Не удалось прочитать URL Browser Source.';
+      return;
+    }
+    const parameters = source.searchParams;
+    ids.filter(id => id !== 'uppercase').forEach(id => {
+      const value = parameters.get(id);
+      if (value === null)
+        return;
+      const field = fields[id];
+      const previous = field.value;
+      field.value = value;
+      if (!field.checkValidity() || field.value !== value)
+        field.value = previous;
+    });
+    fields.uppercase.checked = parameters.get('uppercase') === '1';
+    update();
+    copied.textContent = 'Настройки восстановлены. Измените нужное и скопируйте новый URL.';
+  });
   update();
 </script>
 </body>

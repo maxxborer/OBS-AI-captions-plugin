@@ -26,6 +26,7 @@
 #include <QShowEvent>
 #include <QTableWidget>
 #include <QTableWidgetItem>
+#include <QTextEdit>
 #include <QTimer>
 #include <QUrl>
 #include <QVBoxLayout>
@@ -123,7 +124,7 @@ CaptionSettingsWidget::CaptionSettingsWidget(
             "Звук остаётся на компьютере. Распознавание включается только тогда, когда субтитры кому-то нужны."));
     hero_text->setObjectName(QStringLiteral("captionHeroText"));
     hero_text->setWordWrap(true);
-    auto *flow = new QLabel(QStringLiteral("ИСТОЧНИК  →  T-ONE  →  ЭКРАН · ФАЙЛ · СТРИМ"));
+    auto *flow = new QLabel(QStringLiteral("ИСТОЧНИК  →  ЛОКАЛЬНАЯ МОДЕЛЬ  →  ЭКРАН · ФАЙЛ · СТРИМ"));
     flow->setObjectName(QStringLiteral("captionFlow"));
     hero_layout->addWidget(hero_title);
     hero_layout->addWidget(hero_text);
@@ -165,7 +166,32 @@ CaptionSettingsWidget::CaptionSettingsWidget(
     audio_form->addRow(QStringLiteral("Источник-переключатель"), mute_source_row);
     page_layout->addWidget(audio_group);
 
-    auto *browser_group = new QGroupBox(QStringLiteral("2 · Показывать на экране"));
+    auto *model_group = new QGroupBox(QStringLiteral("2 · Распознавание"));
+    auto *model_layout = new QVBoxLayout(model_group);
+    auto *model_hint = new QLabel(QStringLiteral(
+            "T-One — самый быстрый вариант. Nemotron 3.5 (560 мс) — более точная многоязычная модель; ей нужно заметно больше памяти и вычислений."));
+    model_hint->setObjectName(QStringLiteral("captionHint"));
+    model_hint->setWordWrap(true);
+    model_layout->addWidget(model_hint);
+    auto *model_form = new QFormLayout;
+    local_model_combo = new QComboBox;
+    local_model_combo->addItem(QStringLiteral("T-One · быстро, русский"), QStringLiteral("t_one"));
+    local_model_combo->addItem(QStringLiteral("Nemotron 3.5 · точнее, 560 мс"), QStringLiteral("nemotron_560ms"));
+    local_hotwords = new QTextEdit;
+    local_hotwords->setObjectName(QStringLiteral("localCaptionHotwords"));
+    local_hotwords->setPlaceholderText(QStringLiteral("OBS\nTwitch\nназвание канала"));
+    local_hotwords->setMaximumHeight(92);
+    auto *hotwords_hint = new QLabel(QStringLiteral(
+            "Горячие слова: по одному имени или фразе на строку. Они включают более тщательный поиск только у T-One; Nemotron их игнорирует."));
+    hotwords_hint->setObjectName(QStringLiteral("captionHint"));
+    hotwords_hint->setWordWrap(true);
+    model_form->addRow(QStringLiteral("Модель"), local_model_combo);
+    model_form->addRow(QStringLiteral("Горячие слова"), local_hotwords);
+    model_layout->addLayout(model_form);
+    model_layout->addWidget(hotwords_hint);
+    page_layout->addWidget(model_group);
+
+    auto *browser_group = new QGroupBox(QStringLiteral("3 · Показывать на экране"));
     auto *browser_layout = new QVBoxLayout(browser_group);
     auto *browser_note = new QLabel(
             QStringLiteral("Добавьте URL как Browser Source. Открытый источник сам включает распознавание и сразу получает новые слова."));
@@ -192,7 +218,7 @@ CaptionSettingsWidget::CaptionSettingsWidget(
     browser_layout->addWidget(browser_actions);
     page_layout->addWidget(browser_group);
 
-    auto *replacement_group = new QGroupBox(QStringLiteral("3 · Автозамена текста"));
+    auto *replacement_group = new QGroupBox(QStringLiteral("4 · Автозамена текста"));
     auto *replacement_layout = new QVBoxLayout(replacement_group);
     auto *replacement_hint = new QLabel(QStringLiteral(
             "Правила применяются ко всем выходам. Например: «блять» → «***». Пустая замена удаляет найденный текст."));
@@ -219,7 +245,7 @@ CaptionSettingsWidget::CaptionSettingsWidget(
     replacement_layout->addWidget(add_replacement_button, 0, Qt::AlignLeft);
     page_layout->addWidget(replacement_group);
 
-    auto *file_group = new QGroupBox(QStringLiteral("4 · Дополнительный вывод"));
+    auto *file_group = new QGroupBox(QStringLiteral("5 · Дополнительный вывод"));
     auto *file_layout = new QVBoxLayout(file_group);
     file_output_checkbox = new QCheckBox(QStringLiteral("Обновлять текстовый файл с текущими субтитрами"));
     file_layout->addWidget(file_output_checkbox);
@@ -331,6 +357,12 @@ void CaptionSettingsWidget::update_ui() {
     file_output_checkbox->setChecked(source.file_output_settings.enabled);
     file_output_folder->setText(QString::fromStdString(source.file_output_settings.output_folder));
     file_output_filename->setText(QString::fromStdString(source.file_output_settings.filename_custom));
+    const int model_index = local_model_combo->findData(
+            source.local_caption_model == LocalCaptionModel::Nemotron560ms
+                    ? QStringLiteral("nemotron_560ms")
+                    : QStringLiteral("t_one"));
+    local_model_combo->setCurrentIndex(model_index >= 0 ? model_index : 0);
+    local_hotwords->setPlainText(QString::fromStdString(source.local_hotwords));
     populate_text_replacements();
     validation_label->hide();
     copy_status->clear();
@@ -435,6 +467,18 @@ void CaptionSettingsWidget::accept_current_settings() {
             caption_when_combo->currentData().toString().toStdString());
 
     source.native_stream_output_enabled = stream_output_checkbox->isChecked();
+    source.local_caption_model =
+            local_model_combo->currentData().toString() == QStringLiteral("nemotron_560ms")
+                    ? LocalCaptionModel::Nemotron560ms
+                    : LocalCaptionModel::TOne;
+    const QString hotwords = local_hotwords->toPlainText();
+    if (hotwords.toUtf8().size() > 2048 || hotwords.count('\n') >= 64) {
+        show_validation_error(
+                QStringLiteral("Оставьте не более 64 горячих слов общей длиной до 2048 байт."),
+                local_hotwords);
+        return;
+    }
+    source.local_hotwords = hotwords.toStdString();
     std::vector<TextReplacement> replacements;
     replacements.reserve(static_cast<std::size_t>(text_replacements->rowCount()));
     for (int row = 0; row < text_replacements->rowCount(); ++row) {

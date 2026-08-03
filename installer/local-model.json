@@ -1,16 +1,35 @@
 {
-  "name": "Russian T-One streaming CTC",
-  "modelDirectory": "sherpa-onnx-streaming-t-one-russian-2025-09-08",
-  "archiveFile": "sherpa-onnx-streaming-t-one-russian-2025-09-08.tar.bz2",
-  "url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-streaming-t-one-russian-2025-09-08.tar.bz2",
-  "archiveBytes": 128468156,
-  "sha256": "b9c907450e99a6e5049e279bf18368a17db0bdc5e63b7fa978943138debbe3ae",
-  "requiredFiles": [
-    "model.onnx",
-    "tokens.txt"
-  ],
-  "requiredFileSha256": {
-    "model.onnx": "5ded080e2a6c86ecc11bcb0902d77524eb3e8b0844cb0c0754347f5aafb4dabc",
-    "tokens.txt": "27f7b3ba2096c572375fba1a6b29af1f80d86e08a329940612908112695f97e0"
-  }
+  "schemaVersion": 3,
+  "models": [
+    {
+      "id": "t_one",
+      "name": "Russian T-One streaming CTC",
+      "modelDirectory": "sherpa-onnx-streaming-t-one-russian-2025-09-08",
+      "archiveFile": "sherpa-onnx-streaming-t-one-russian-2025-09-08.tar.bz2",
+      "url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-streaming-t-one-russian-2025-09-08.tar.bz2",
+      "archiveBytes": 128468156,
+      "sha256": "b9c907450e99a6e5049e279bf18368a17db0bdc5e63b7fa978943138debbe3ae",
+      "requiredFiles": ["model.onnx", "tokens.txt"],
+      "requiredFileSha256": {
+        "model.onnx": "5ded080e2a6c86ecc11bcb0902d77524eb3e8b0844cb0c0754347f5aafb4dabc",
+        "tokens.txt": "27f7b3ba2096c572375fba1a6b29af1f80d86e08a329940612908112695f97e0"
+      }
+    },
+    {
+      "id": "nemotron_560ms",
+      "name": "Nemotron 3.5 ASR streaming 560 ms",
+      "modelDirectory": "sherpa-onnx-nemotron-3.5-asr-streaming-0.6b-560ms-int8-2026-06-11",
+      "archiveFile": "sherpa-onnx-nemotron-3.5-asr-streaming-0.6b-560ms-int8-2026-06-11.tar.bz2",
+      "url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-nemotron-3.5-asr-streaming-0.6b-560ms-int8-2026-06-11.tar.bz2",
+      "archiveBytes": 475271763,
+      "sha256": "c6bf5e0df765f9d5b43bc9e0536d4b4b3e7d40bdf5ecf13e45f134c51c05ae3a",
+      "requiredFiles": ["encoder.int8.onnx", "decoder.int8.onnx", "joiner.int8.onnx", "tokens.txt"],
+      "requiredFileSha256": {
+        "encoder.int8.onnx": "012e9321373af99021415e0b0eb3ec827b4be3153be6f30d9b448fe65e896e68",
+        "decoder.int8.onnx": "19f9c98fc6d0a2c33a65a43b36fdb2e914c26c0aa9764be3aebc502a1e982fb0",
+        "joiner.int8.onnx": "4101c7c679a0bc30483794b27a059e34e79232aa2068d78d51231a22c8b0d7ce",
+        "tokens.txt": "729cc103155bafa785f9cd45746cd41cabe97eab7182fc04d594129587958f8a"
+      }
+    }
+  ]
 }

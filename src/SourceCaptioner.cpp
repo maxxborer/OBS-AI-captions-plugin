@@ -104,7 +104,9 @@ bool SourceCaptioner::start_caption_stream(const SourceCaptionerSettings &new_se
     bool started_ok = false;
     audio_source_capture_status audio_capture_status = AUDIO_SOURCE_NOT_STREAMED;
     const bool source_changed =
-            settings.caption_source_settings != new_settings.caption_source_settings;
+            settings.caption_source_settings != new_settings.caption_source_settings ||
+            settings.local_caption_model != new_settings.local_caption_model ||
+            settings.local_hotwords != new_settings.local_hotwords;
     std::unique_ptr<SourceAudioCaptureSession> source_session_to_stop;
     std::unique_ptr<OutputAudioCaptureSession> output_session_to_stop;
     std::unique_ptr<CaptionEngine> engine_to_stop;
@@ -204,8 +206,13 @@ bool SourceCaptioner::_start_caption_stream() {
     if (!caption_engine) {
         try {
             LocalCaptionEngineSettings local_settings;
-            BPtr<char> model_directory = obs_module_file(
-                    "models/sherpa-onnx-streaming-t-one-russian-2025-09-08");
+            local_settings.model = settings.local_caption_model;
+            local_settings.hotwords = settings.local_hotwords;
+            const char *model_path =
+                    local_settings.model == LocalCaptionModel::Nemotron560ms
+                            ? "models/sherpa-onnx-nemotron-3.5-asr-streaming-0.6b-560ms-int8-2026-06-11"
+                            : "models/sherpa-onnx-streaming-t-one-russian-2025-09-08";
+            BPtr<char> model_directory = obs_module_file(model_path);
             if (model_directory)
                 local_settings.model_directory = model_directory.Get();
 
